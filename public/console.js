@@ -125,8 +125,8 @@ function notOperator(userId) {
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
-const PAGES = { overview: ['Overview', overview], payments: ['Payments', payments], tenants: ['Tenants', tenants], webhooks: ['Failed webhooks', webhooks], callbacks: ['Provider callbacks', callbacks] };
-let attention = { unknown: 0, dead: 0 };
+const PAGES = { overview: ['Overview', overview], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
+let attention = { unknown: 0, problems: 0 };
 
 let started = false;
 async function start() {
@@ -145,7 +145,7 @@ async function route() {
 	const page = PAGES[name] ? name : 'overview';
 	const main = h('main', { class: 'main' }, h('p', { class: 'muted' }, 'Loading…'));
 	const nav = h('nav', { class: 'nav' }, Object.entries(PAGES).map(([id, [label]]) => {
-		const n = id === 'payments' ? attention.unknown : id === 'webhooks' ? attention.dead : 0;
+		const n = id === 'payments' ? attention.unknown : id === 'events' ? attention.problems : 0;
 		return h('a', { href: `#/${id}`, 'aria-current': id === page ? 'page' : null }, label, n ? h('span', { class: 'count' }, n) : null);
 	}));
 	put(app, h('div', { class: 'shell' }, h('aside', { class: 'side' }, h('div', { class: 'brand' }, 'Paygate', h('small', {}, 'Operator console')), nav, h('div', { class: 'spacer' }),
@@ -161,10 +161,10 @@ async function route() {
 }
 async function refreshAttention(nav) {
 	try {
-		const [u, d] = await Promise.all([api('GET', '/admin/payments?status=unknown'), api('GET', '/admin/webhooks/dead')]);
-		attention = { unknown: u.data.length, dead: d.data.length };
-		const set = (id, n) => { const a = [...nav.children].find((x) => x.getAttribute('href') === `#/${id}`); if (!a) return; a.querySelector('.count')?.remove(); if (n) a.append(h('span', { class: 'count' }, n)); };
-		set('payments', attention.unknown); set('webhooks', attention.dead);
+		const a = await api('GET', '/admin/attention');
+		attention = { unknown: a.unknown, problems: a.deadWebhooks + a.rejectedCallbacks24h };
+		const set = (id, n) => { const el = [...nav.children].find((x) => x.getAttribute('href') === `#/${id}`); if (!el) return; el.querySelector('.count')?.remove(); if (n) el.append(h('span', { class: 'count' }, n)); };
+		set('payments', attention.unknown); set('events', attention.problems);
 	} catch { /* the badge is a convenience */ }
 }
 const head = (title, sub, ...actions) => h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h1', {}, title), sub ? h('p', { class: 'sub m0' }, sub) : null), actions);
@@ -173,15 +173,56 @@ const table = (cols, rows, empty) => rows.length
 	: h('div', { class: 'card empty' }, empty);
 
 // ---- overview -------------------------------------------------------------------------------------------------------------------
-async function overview(main) {
-	const [flt, prov, unknown, dead, recent] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/payments?status=unknown'), api('GET', '/admin/webhooks/dead'), api('GET', '/admin/payments')]);
-	const todo = [];
-	if (unknown.data.length) todo.push(h('div', { class: 'alert bad' }, h('strong', {}, `${unknown.data.length} payout(s) with an unknown outcome. `), 'Money may have been sent: a person must decide. ', h('a', { href: '#/payments?status=unknown' }, 'Review')));
-	if (dead.data.length) todo.push(h('div', { class: 'alert warn' }, h('strong', {}, `${dead.data.length} webhook(s) could not be delivered. `), h('a', { href: '#/webhooks' }, 'Review')));
-	if (!todo.length) todo.push(h('div', { class: 'alert ok' }, 'Nothing needs a person right now.'));
+const compact = (n) => n >= 1e9 ? `${+(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${+(n / 1e3).toFixed(1)}K` : new Intl.NumberFormat('fr-FR').format(n).replace(/\u202f|\u00a0/g, ' ');
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const tile = (label, value, sub, cls) => h('div', { class: `tile${cls ? ' ' + cls : ''}` }, h('div', { class: 'tl' }, label), h('div', { class: 'tv' }, value), sub ? h('div', { class: 'ts' }, sub) : null);
 
-	put(main, head('Overview', `Payout float floor ${fmtAmount(flt.floor)}`, h('button', { class: 'btn', onclick: route }, 'Refresh')), ...todo, h('h2', {}, 'Payment providers (last 24 h)'), providerCards(prov, flt),
-		h('h2', {}, 'Latest payments'), paymentsTable(recent.data.slice(0, 10)));
+async function overview(main) {
+	const [flt, prov, att, unknown, recent, feed] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/attention'),
+		api('GET', '/admin/payments?status=unknown'), api('GET', '/admin/payments'), api('GET', '/admin/events?limit=12')]);
+
+	// what needs a person, most serious first
+	const todo = [];
+	if (att.unknown) todo.push(['bad', plural(att.unknown, 'payout'), 'with an unknown outcome', 'Money may have been sent. A person must decide.', '#/payments?status=unknown', 'Resolve']);
+	if (att.deadWebhooks) todo.push(['warn', plural(att.deadWebhooks, 'webhook'), 'not delivered', 'A product was not told about a payment.', '#/events?source=webhook&problems=1', 'Retry']);
+	if (att.rejectedCallbacks24h) todo.push(['warn', plural(att.rejectedCallbacks24h, 'callback'), 'rejected (24 h)', 'Failed the signature or shape check.', '#/events?source=callback&problems=1', 'Inspect']);
+	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, null, null]);
+	const attentionBlock = todo.length
+		? h('div', { class: 'todo' }, todo.map(([level, what, state, why, href, action]) => h('div', { class: `todo-item ${level}` },
+			h('div', { class: 'grow' }, h('strong', {}, what), ` ${state}`, h('div', { class: 'todo-why' }, why)), href ? h('a', { class: 'btn sm', href }, action) : null)))
+		: h('div', { class: 'alert ok' }, 'Nothing needs a person right now.');
+
+	// the last 24 hours, every provider together
+	const rows = prov.last24h;
+	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
+	const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
+	const done = sum((r) => ['completed', 'failed', 'expired'].includes(r.status)), open = sum((r) => r.status === 'processing');
+	const rate = done.n ? Math.round(((inn.n + out.n) / done.n) * 100) : null;
+	const kpis = h('div', { class: 'tiles' },
+		tile('Collected', `${compact(inn.amount)} FCFA`, plural(inn.n, 'payment')),
+		tile('Paid out', `${compact(out.amount)} FCFA`, plural(out.n, 'payment')),
+		tile('Success rate', rate === null ? '–' : `${rate}%`, done.n ? `${inn.n + out.n} of ${done.n} settled` : 'nothing settled yet'),
+		tile('In progress', String(open.n), unknown.data.length ? `${unknown.data.length} unknown, needs a person` : 'waiting on customers or providers', unknown.data.length ? 'bad' : null));
+
+	const sandbox = prov.data.some((p) => p.id === 'sandbox');
+	const live = prov.data.some((p) => p.notes.includes('LIVE'));
+	put(main,
+		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), h('button', { class: 'btn', onclick: route }, 'Refresh')),
+		attentionBlock,
+		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
+		h('div', { class: 'cols' },
+			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data.slice(0, 8))),
+			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))),
+		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Providers'), h('span', { class: 'muted small' }, 'Float floor ', fmtAmount(flt.floor))), providerCards(prov, flt));
+}
+
+/** A short list for the overview; the full table is on the payments page. */
+function paymentList(rows) {
+	if (!rows.length) return h('div', { class: 'card empty' }, 'No payments yet.');
+	return h('div', { class: 'list' }, rows.map((p) => h('div', { class: 'li click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
+		h('span', { class: `dir ${p.object === 'collection' ? 'in' : 'out'}`, title: p.object === 'collection' ? 'Collection (in)' : 'Disbursement (out)' }, p.object === 'collection' ? '↓' : '↑'),
+		h('div', { class: 'grow min0' }, h('div', { class: 'ellipsis' }, h('span', { class: 'mono' }, p.reference)), h('div', { class: 'muted small ellipsis' }, p.tenant, ' · ', channel(p), ' · ', ago(p.createdAt))),
+		h('span', { class: 'num strong' }, fmtAmount(p.amount)), badge(p.status))));
 }
 
 function floatBlock(flt) {
@@ -197,20 +238,16 @@ function floatBlock(flt) {
 function providerCards(prov, flt) {
 	return h('div', { class: 'pgrid' }, prov.data.map((p) => {
 		const mine = prov.last24h.filter((r) => r.provider === p.id);
-		const sum = (f) => mine.filter(f).reduce((n, r) => ({ n: n.n + r.n, amount: n.amount + (r.amount || 0) }), { n: 0, amount: 0 });
-		const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
-		const bad = sum((r) => r.status === 'failed' || r.status === 'unknown'), open = sum((r) => r.status === 'processing');
+		const count = (f) => mine.filter(f).reduce((n, r) => n + r.n, 0);
+		const ok = count((r) => r.status === 'completed'), bad = count((r) => r.status === 'failed' || r.status === 'unknown'), open = count((r) => r.status === 'processing');
 		const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 40, height: 40 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
-		const stat = (label, big, small, bad) => h('div', { class: 'pstat' }, h('div', { class: 'pl' }, label), h('div', { class: `pv${bad ? ' bad-text' : ''}` }, big), h('div', { class: 'ps' }, small));
 		return h('section', { class: `card pcard${p.active ? '' : ' off'}` },
 			h('header', { class: 'phead' }, mark, h('div', { class: 'grow' }, h('h3', {}, p.name), h('p', { class: 'muted m0' }, p.role)), badge(p.active ? 'active' : 'idle')),
 			h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Channels'), h('span', { class: 'chans' }, p.channels.map((c) => h('span', { class: 'chip' }, h('img', { class: 'logo', src: `/providers/${c === 'bank' ? 'pispi' : c}.png`, alt: '', width: 20, height: 20 }), OPERATOR[c] || 'Bank accounts')))),
 			h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Countries'), h('span', { class: 'chans' }, p.countries.map((c) => h('span', { class: 'chip' }, COUNTRY[c] ? h('img', { class: 'flag', src: `/country/${COUNTRY[c][0]}.png`, alt: '', width: 20, height: 20 }) : null, COUNTRY[c]?.[1] || c)))),
 			p.notes.length ? h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Setup'), h('span', { class: 'chans' }, p.notes.map((n) => h('span', { class: 'tag' }, n)))) : null,
 			p.id === flt.provider ? floatBlock(flt) : null,
-			p.active || mine.length ? h('div', { class: 'pstats' },
-				stat('Collected', fmtAmount(inn.amount), `${inn.n} payment${inn.n === 1 ? '' : 's'}`), stat('Paid out', fmtAmount(out.amount), `${out.n} payment${out.n === 1 ? '' : 's'}`),
-				stat('In progress', String(open.n), 'waiting'), stat('Failed / unknown', String(bad.n), 'last 24 h', bad.n > 0)) : h('p', { class: 'muted m0' }, 'No activity in the last 24 hours.'));
+			h('div', { class: 'pfoot muted small' }, mine.length ? [`24 h: ${ok} completed · ${open} in progress · `, h('span', { class: bad ? 'bad-text' : null }, `${bad} failed or unknown`)] : 'No activity in the last 24 hours.'));
 	}));
 }
 
@@ -278,29 +315,69 @@ function resolveModal(p, outcomes, done) {
 // ---- tenants --------------------------------------------------------------------------------------------------------------------
 async function tenants(main) {
 	const { data } = await api('GET', '/admin/tenants');
-	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null) }, 'New tenant')),
+	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null, data.map((t) => t.id)) }, 'New tenant')),
 		table([{ label: 'Id' }, { label: 'Name' }, { label: 'Status' }, { label: 'Webhook' }, { label: 'Max payment', num: true }, { label: 'Created' }],
 			data.map((t) => h('tr', { class: 'click', tabindex: 0, onclick: () => tenantDrawer(t.id), onkeydown: (e) => { if (e.key === 'Enter') tenantDrawer(t.id) } },
 				h('td', { class: 'mono' }, t.id), h('td', {}, t.name), h('td', {}, badge(t.status)), h('td', { class: 'mono' }, t.webhook_url || '–'), h('td', { class: 'num' }, t.max_amount ? fmtAmount(t.max_amount) : 'default'), h('td', {}, fmtTime(t.created_at)))),
 			'No tenants yet. Create one for each product that will use Paygate.'));
 }
-function tenantForm(t) {
-	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'relay', pattern: '[a-z][a-z0-9-]{1,31}' }), name: h('input', { value: t?.name || '', maxlength: 80 }),
+const SLUG = /^[a-z][a-z0-9-]{1,31}$/;
+/** "Côte Pay Shop" -> "cote-pay-shop": what the server accepts as a tenant id, made unique among `taken`. */
+function slugFor(name, taken) {
+	const base = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+/, '').slice(0, 28).replace(/-+$/, '');
+	if (base.length < 2) return '';
+	let id = base;
+	for (let i = 2; taken.includes(id); i++) id = `${base}-${i}`;
+	return id;
+}
+
+function tenantForm(t, taken = []) {
+	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'made from the name', pattern: SLUG.source.slice(1, -1), spellcheck: 'false', autocomplete: 'off' }),
+		name: h('input', { value: t?.name || '', maxlength: 80, placeholder: t ? null : 'Courtly', autocomplete: 'off' }),
 		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), max: h('input', { type: 'number', min: 100, step: 1, value: t?.max_amount || '', placeholder: 'gateway default' }),
-		ns: h('input', { value: '', placeholder: 'leave empty for new products' }) };
-	const err = h('div');
-	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), t ? null : field('Id', f.id, '(permanent, lowercase)'), field('Name', f.name), field('Webhook URL', f.webhook, '(https)'), field('Max single payment', f.max, '(FCFA)'),
-		t ? null : field('ID namespace', f.ns, '(only for products migrated from another gateway)'), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try {
-				const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
-				if (t) await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max });
-				else await api('POST', '/admin/tenants', { id: f.id.value.trim(), name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null });
-				m.close(); toast('Saved'); route();
-				if (!t) tenantDrawer(f.id.value.trim());
-			} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-		} }, 'Save'))], { center: true });
+		ns: h('input', { value: '', placeholder: 'leave empty for new products', spellcheck: 'false' }),
+		key: h('input', { type: 'checkbox', checked: true }) };
+	const err = h('div'), idHint = h('small', { class: 'hint' });
+	// the id follows the name until someone types in it
+	let idTouched = false;
+	const checkId = () => {
+		const v = f.id.value.trim();
+		put(idHint, !v ? 'Lowercase letters, digits and dashes. It cannot be changed later.' : !SLUG.test(v) ? h('span', { class: 'bad-text' }, 'Start with a letter; 2 to 32 lowercase letters, digits or dashes.')
+			: taken.includes(v) ? h('span', { class: 'bad-text' }, 'A tenant already has this id.') : [h('code', {}, v), ' is free. It cannot be changed later.']);
+	};
+	if (!t) {
+		f.name.addEventListener('input', () => { if (!idTouched) { f.id.value = slugFor(f.name.value, taken); checkId() } });
+		f.id.addEventListener('input', () => { idTouched = f.id.value !== ''; f.id.value = f.id.value.toLowerCase(); checkId() });
+		checkId();
+	}
+	const save = h('button', { class: 'btn primary', onclick: async (e) => {
+		e.target.disabled = true;
+		try {
+			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
+			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max }); m.close(); toast('Saved'); route(); return; }
+			const id = f.id.value.trim();
+			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null });
+			m.close(); route();
+			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
+		} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
+	} }, t ? 'Save' : 'Create tenant');
+	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint),
+		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
+		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
+		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, '(only for products migrated from another gateway)')), err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true });
+	f.name.focus();
+}
+
+/** Everything a new product needs to connect, in one place: its API key (shown once) and its webhook secret. */
+async function connectModal(id) {
+	let key, secret;
+	try { [key, secret] = await Promise.all([api('POST', `/admin/tenants/${id}/keys`, { label: 'default' }), api('GET', `/admin/tenants/${id}/webhook-secret`)]) }
+	catch (x) { toast(`Tenant created, but: ${x.message}`); return tenantDrawer(id) }
+	const row = (label, value, note) => [h('label', {}, label, note ? h('small', {}, ` ${note}`) : null), h('div', { class: 'copyrow' }, h('code', { class: 'secret' }, value), h('button', { class: 'btn sm', onclick: () => copy(value) }, 'Copy'))];
+	const m = overlay([h('h2', {}, `${id} is ready to connect`), h('p', { class: 'muted' }, 'Give these to the product. The API key is shown only this once: only its hash is stored.'),
+		row('API key', key.key, '(Authorization: Bearer …)'), row('Webhook signing secret', secret.secret, '(can be shown again)'),
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { m.close(); tenantDrawer(id) } }, 'Open tenant'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 async function tenantDrawer(id) {
 	const d = overlay(h('p', { class: 'muted' }, 'Loading…'));
@@ -338,24 +415,77 @@ function newKey(tenantId, after) {
 }
 
 // ---- failed webhooks ------------------------------------------------------------------------------------------------------------
-async function webhooks(main) {
-	const { data } = await api('GET', '/admin/webhooks/dead');
-	put(main, head('Failed webhooks', 'Events that were not delivered after every retry. Retrying sends them again from the start with the same event id.', h('button', { class: 'btn', onclick: route }, 'Refresh')),
-		table([{ label: 'Created' }, { label: 'Tenant' }, { label: 'Event' }, { label: 'Payment' }, { label: 'Attempts', num: true }, { label: 'Last error' }, { label: '' }],
-			data.map((w) => h('tr', {}, h('td', {}, ago(w.created_at)), h('td', {}, w.tenant_id), h('td', {}, w.type), h('td', { class: 'mono' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); paymentDrawer(w.payment_id) } }, w.payment_id)),
-				h('td', { class: 'num' }, String(w.attempts)), h('td', {}, w.last_error || (w.last_status ? `HTTP ${w.last_status}` : '–')),
-				h('td', {}, h('button', { class: 'btn sm', onclick: async (e) => { e.target.disabled = true; try { await api('POST', `/admin/webhooks/${w.id}/retry`); toast('Queued'); route(); } catch (x) { e.target.disabled = false; toast(x.message) } } }, 'Retry')))),
-			'No failed webhooks.'));
+// ---- events ---------------------------------------------------------------------------------------------------------------------
+// One feed: payment status changes, provider callbacks in, webhooks out. Bodies are untrusted and only ever shown as text.
+const SOURCE = { payment: ['Payment', '●'], callback: ['Callback in', '↘'], webhook: ['Webhook out', '↗'] };
+const dayLabel = (ms) => { const d = new Date(ms), t = new Date(); const y = new Date(t); y.setDate(t.getDate() - 1);
+	return d.toDateString() === t.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' }); };
+const clock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const payLink = (id) => id ? h('a', { class: 'mono', href: '#', onclick: (e) => { e.preventDefault(); e.stopPropagation(); paymentDrawer(id) } }, id) : null;
+const who = (actor) => !actor ? null : actor.startsWith('admin:') ? `by operator ${actor.slice(6) === 'operator' ? '(admin key)' : actor.slice(6)}` : `by ${actor}`;
+
+function feedItem(e, { compact = false, onChange } = {}) {
+	const [label, glyph] = SOURCE[e.source];
+	let title, meta;
+	if (e.source === 'payment') {
+		title = [`${e.kind === 'disbursement' ? 'Payout' : 'Collection'} ${e.type.replace(/_/g, ' ')}`, e.amount != null ? h('span', { class: 'muted' }, ` · ${fmtAmount(e.amount)}`) : null];
+		meta = [e.tenant, payLink(e.paymentId), who(e.actor), e.detail];
+	} else if (e.source === 'callback') {
+		title = [`${PSP[e.provider] || e.provider} callback `, h('span', { class: 'mono' }, e.type)];
+		meta = [e.status === 'accepted' ? 'Signature and shape accepted' : 'Rejected: failed the signature or shape check'];
+	} else {
+		title = [h('span', { class: 'mono' }, e.type), ` to ${e.tenant}`];
+		meta = [payLink(e.paymentId), e.attempts ? plural(e.attempts, 'attempt') : 'not sent yet', e.detail];
+	}
+	const retry = e.source === 'webhook' && e.status !== 'delivered' && !compact
+		? h('button', { class: 'btn sm', onclick: async (ev) => { ev.target.disabled = true; try { await api('POST', `/admin/webhooks/${e.id}/retry`); toast('Queued for delivery'); onChange?.() } catch (x) { ev.target.disabled = false; toast(x.message) } } }, e.status === 'dead' ? 'Retry' : 'Send now')
+		: null;
+	const body = !compact && e.body ? h('details', { class: 'ev-body' }, h('summary', {}, e.source === 'callback' ? 'Body as received' : 'Payload'), h('pre', {}, pretty(e.body))) : null;
+	return h('li', { class: `ev${e.problem ? ' problem' : ''}` },
+		h('time', { class: 'ev-time', datetime: new Date(e.at).toISOString(), title: fmtTime(e.at) }, compact ? ago(e.at) : clock(e.at)),
+		h('span', { class: `src src-${e.source}`, title: label }, h('span', { 'aria-hidden': 'true' }, glyph), compact ? null : ` ${label}`),
+		h('div', { class: 'ev-main' }, h('div', { class: 'ev-title' }, title), h('div', { class: 'ev-meta' }, meta.filter(Boolean).flatMap((m, i) => i ? [' · ', m] : [m])), body),
+		h('div', { class: 'ev-side' }, h('span', { class: `badge s-${e.source === 'callback' ? (e.problem ? 'failed' : 'ok') : e.status}` }, e.type === 'late_completion' ? 'late' : e.status.replace(/_/g, ' ')), retry));
 }
 
-// ---- provider callbacks ---------------------------------------------------------------------------------------------------------
-async function callbacks(main) {
-	const { data } = await api('GET', '/admin/provider-events');
-	put(main, head('Provider callbacks', 'The last 100 callbacks exactly as they arrived. Rejected ones failed the signature or shape check.', h('button', { class: 'btn', onclick: route }, 'Refresh')),
-		table([{ label: 'Received' }, { label: 'Provider' }, { label: 'Path' }, { label: 'Result' }, { label: 'Body' }],
-			data.map((e) => { const body = pretty(e.body); return h('tr', {}, h('td', { title: fmtTime(e.received_at) }, ago(e.received_at)), h('td', {}, e.provider), h('td', { class: 'mono' }, e.path), h('td', {}, badge(e.accepted ? 'ok' : 'failed'), ' ', e.accepted ? 'accepted' : 'rejected'),
-				h('td', {}, h('details', {}, h('summary', {}, 'view'), h('pre', {}, body)))); }),
-			'No callbacks received yet.'));
+function feedList(items, opts = {}) {
+	if (!items.length) return h('div', { class: 'card empty' }, opts.compact ? 'Nothing has happened yet.' : 'No events match.');
+	if (opts.compact) return h('ul', { class: 'feed compact' }, items.map((e) => feedItem(e, opts)));
+	const out = []; let day = null;
+	for (const e of items) { const d = dayLabel(e.at); if (d !== day) { day = d; out.push(h('li', { class: 'day' }, d)) } out.push(feedItem(e, opts)) }
+	return h('ul', { class: 'feed' }, out);
+}
+
+async function events(main) {
+	const q = new URLSearchParams(location.hash.split('?')[1] || '');
+	let source = ['payment', 'callback', 'webhook'].includes(q.get('source')) ? q.get('source') : '';
+	const problems = h('input', { type: 'checkbox', checked: q.get('problems') === '1' ? true : null });
+	const tenant = h('input', { placeholder: 'Tenant id', value: q.get('tenant') || '', 'aria-label': 'Tenant', size: 12 });
+	const payment = h('input', { placeholder: 'Payment id', value: q.get('payment') || '', 'aria-label': 'Payment id', size: 22 });
+	const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Source' });
+	const drawSeg = () => put(seg, [['', 'All'], ['payment', 'Payments'], ['callback', 'Callbacks in'], ['webhook', 'Webhooks out']].map(([v, l]) =>
+		h('button', { type: 'button', 'aria-pressed': String(source === v), onclick: () => { source = v; drawSeg(); apply() } }, l)));
+	drawSeg();
+
+	const params = () => { const p = new URLSearchParams(); if (source) p.set('source', source); if (problems.checked) p.set('problems', '1'); if (tenant.value.trim()) p.set('tenant', tenant.value.trim()); if (payment.value.trim()) p.set('payment', payment.value.trim()); return p };
+	const out = h('div'), more = h('div', { class: 'more' });
+	let items = [], next = null;
+	const draw = () => {
+		const note = source === 'callback' && (tenant.value.trim() || payment.value.trim()) ? h('p', { class: 'muted small' }, 'Provider callbacks belong to no tenant or payment, so those filters hide them.') : null;
+		put(out, note, feedList(items, { onChange: load }));
+		put(more, next ? h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; await page(); } }, 'Load older') : items.length ? h('p', { class: 'muted small' }, 'That is everything.') : null);
+	};
+	const page = async () => {
+		const p = params(); p.set('limit', '50'); if (next) p.set('before', String(next));
+		try { const r = await api('GET', `/admin/events?${p}`); items = items.concat(r.data); next = r.next; draw() } catch (e) { put(more, h('div', { class: 'alert bad' }, e.message)) }
+	};
+	const load = async () => { items = []; next = null; put(out, h('p', { class: 'muted' }, 'Loading…')); put(more); await page(); };
+	const apply = () => { const p = params(); history.replaceState(null, '', `#/events${p.size ? '?' + p : ''}`); load(); };
+	problems.addEventListener('change', apply); tenant.addEventListener('change', apply); payment.addEventListener('change', apply);
+
+	put(main, head('Events', 'Everything that happened, newest first: payment status changes, provider callbacks in, and webhooks out to products.', h('button', { class: 'btn', onclick: load }, 'Refresh')),
+		h('div', { class: 'bar' }, seg, h('label', { class: 'check' }, problems, 'Needs attention'), h('span', { class: 'grow' }), tenant, payment), out, more);
+	await load();
 }
 
 start();
