@@ -31,7 +31,8 @@ h2 { font-size: 14px; font-weight: 650; margin: 0 0 10px; }
 .kv { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; margin: 0; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
 .mono, td.mono { font-family: var(--mono); font-size: 12.5px; }
-.muted { color: var(--muted); }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.clerk { margin: 18px 0; min-height: 60px; }
 .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; }
 th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }

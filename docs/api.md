@@ -114,7 +114,9 @@ Set a URL with the operator. Events:
 - With polling off (`PISPI_POLL`), nothing settles automatically: an operator confirms with `POST /admin/payments/{id}/resolve`.
 - `pispi_rtp` sends the customer a payment request. A customer is sent at most 3 per day.
 
-## Operator API (`Authorization: Bearer <ADMIN_API_KEY>`)
+## Operator API (`Authorization: Bearer <ADMIN_API_KEY or an operator's Clerk session token>`)
+
+A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_operator` with its `userId`.
 
 | | |
 |---|---|

@@ -1,3 +1,4 @@
+import { clerkEnabled, clerkOperator } from './auth.ts';
 import { ApiError } from './errors.ts';
 import { createApiKey, createTenant, getTenant, revokeApiKey, rotateWebhookSecret, updateTenant, webhookSecret, type TenantInput } from './tenants.ts';
 import { getRow, view, type PaymentRow } from './payments.ts';
@@ -9,15 +10,19 @@ import { safeEqual, on } from './util.ts';
 import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 
 /**
- * The operator API (`Authorization: Bearer <ADMIN_API_KEY>`): tenants, their keys and webhook secrets, payments that need a person, undeliverable events.
- * One shared operator key for now; there is no UI yet. Never reachable with a tenant key.
+ * The operator API: tenants, their keys and webhook secrets, payments that need a person, undeliverable events. Never reachable with a tenant key.
+ * Two ways in, both `Authorization: Bearer ...`: a Clerk session token from the console (an operator in CLERK_OPERATOR_IDS; recorded as their
+ * Clerk user id), or the shared ADMIN_API_KEY for scripts (recorded as `operator`). Returns who it is, for the payment history.
  */
-export function requireAdmin(env: Env, request: Request): string {
+export async function requireAdmin(env: Env, request: Request): Promise<string> {
+	const key = env.ADMIN_API_KEY && env.ADMIN_API_KEY.length >= 24 ? env.ADMIN_API_KEY : null;
+	const clerk = clerkEnabled(env);
+	if (!key && !clerk) throw new ApiError(503, 'admin_disabled', 'Set ADMIN_API_KEY (24 characters at least) or configure Clerk');
 	const m = /^Bearer (\S+)$/.exec(request.headers.get('authorization') ?? '');
-	const key = env.ADMIN_API_KEY;
-	if (!key || key.length < 24) throw new ApiError(503, 'admin_disabled', 'ADMIN_API_KEY is not set (24 characters at least)');
-	if (!m || !safeEqual(m[1]!, key)) throw new ApiError(401, 'unauthorized', 'A valid admin key is required');
-	return 'operator';
+	if (!m) throw new ApiError(401, 'unauthorized', 'A valid admin key or operator session is required');
+	if (key && safeEqual(m[1]!, key)) return 'operator';
+	if (clerk && m[1]!.split('.').length === 3) return clerkOperator(env, request, m[1]!);
+	throw new ApiError(401, 'unauthorized', 'A valid admin key or operator session is required');
 }
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -30,7 +35,7 @@ const body = async (request: Request): Promise<Record<string, unknown>> => {
 const adminView = (env: Env, r: PaymentRow) => ({ ...view(env, r), tenant: r.tenant_id, provider: r.provider, country: r.country, providerId: r.provider_id, providerRef: r.provider_ref, failureDetail: r.failure_detail, attempts: r.attempts, version: r.version });
 
 export async function adminApi(env: Env, request: Request, path: string, providers: Providers): Promise<Response | null> {
-	const admin = requireAdmin(env, request);
+	const admin = await requireAdmin(env, request);
 	const url = new URL(request.url);
 	const m = request.method;
 	let g: RegExpExecArray | null;

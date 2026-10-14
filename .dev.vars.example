@@ -1,4 +1,7 @@
 ADMIN_API_KEY=change-me-to-a-long-random-string
+# Clerk operator sign-in (optional): CLERK_PUBLISHABLE_KEY and CLERK_OPERATOR_IDS are vars in wrangler.jsonc; one of these checks the session
+CLERK_SECRET_KEY=
+CLERK_JWT_KEY=
 WEBHOOK_MASTER_SECRET=change-me-to-another-long-random-string
 PAWAPAY_API_TOKEN=
 PI_SP_API_CLIENT_ID=

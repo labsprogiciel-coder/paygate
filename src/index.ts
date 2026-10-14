@@ -1,4 +1,5 @@
 import { adminApi } from './admin.ts';
+import { clerkEnabled, clerkFrontendApi } from './auth.ts';
 import { handleProviderCallback } from './callbacks.ts';
 import { ApiError } from './errors.ts';
 import { checkFloat, loadFloat } from './float.ts';
@@ -86,11 +87,30 @@ async function methods(env: Env, url: URL, providers: Providers) {
 	return { rail, direction, available: true, authType: m.authType, min: m.min, max: Number.isFinite(m.max) ? m.max : null, instructions: m.instructions, codeInstructions: m.codeInstructions };
 }
 
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/** What Clerk's sign-in needs on top: its scripts and API on the Frontend API host, its avatars, its injected styles, and the Turnstile bot check. */
+const clerkCsp = (fapi: string) => `default-src 'none'; script-src 'self' https://${fapi} https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://${fapi}; img-src 'self' data: https://img.clerk.com; worker-src 'self' blob:; frame-src https://challenges.cloudflare.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`;
+
+/** The console page. With Clerk on, it carries the publishable key (not a secret) for console.js, and a CSP that lets Clerk load. */
+async function consolePage(env: Env, request: Request): Promise<Response> {
+	const res = await env.ASSETS.fetch(new Request(new URL('/', request.url), { headers: request.headers })); // "/" is index.html (asking for /index.html would redirect)
+	const fapi = clerkEnabled(env) ? clerkFrontendApi(env.CLERK_PUBLISHABLE_KEY) : null;
+	const headers = new Headers(res.headers);
+	headers.set('content-security-policy', fapi ? clerkCsp(fapi) : CSP);
+	// the same as public/_headers, which is not applied to what the Worker returns
+	headers.set('x-content-type-options', 'nosniff'); headers.set('referrer-policy', 'no-referrer'); headers.set('cache-control', 'no-store');
+	if (!fapi || !res.ok) return new Response(res.body, { status: res.status, headers });
+	const meta = `<meta name="clerk-publishable-key" content="${env.CLERK_PUBLISHABLE_KEY}">\n<meta name="clerk-frontend-api" content="${fapi}">\n`;
+	headers.delete('content-length'); headers.delete('etag');
+	return new Response((await res.text()).replace('</head>', `${meta}</head>`), { status: res.status, headers });
+}
+
 export async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const url = new URL(request.url);
 	const path = url.pathname;
 	try {
 		if (path === '/health') return json({ ok: true });
+		if ((path === '/' || path === '/index.html') && request.method === 'GET') return await consolePage(env, request);
 		const providers = getProviders(env);
 		if (path === '/callbacks/pawapay/deposits' || path === '/callbacks/pawapay/payouts') {
 			if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
