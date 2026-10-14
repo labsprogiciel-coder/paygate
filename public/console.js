@@ -43,6 +43,15 @@ const PSP = { pawapay: 'pawaPay', pispi: 'PI-SPI', sandbox: 'Sandbox' };
 const OPERATOR = { orange: 'Orange Money', wave: 'Wave', moov: 'Moov Money' };
 const RAIL = { mobile_money: 'Mobile money', pispi_qr: 'Bank · QR code', pispi_rtp: 'Bank · payment request' };
 const ICON = { orange: 'orange', wave: 'wave', moov: 'moov' };
+const logoFor = (p) => p.rail === 'mobile_money' ? ICON[p.operator] : p.rail?.startsWith('pispi') ? 'pispi' : null;
+/** A payment's provider as an avatar (operator or PI-SPI logo, else the PSP's initials), with a corner badge for its direction. */
+const avatar = (p, kind = p.object ?? p.kind) => {
+	const f = logoFor(p), out = kind === 'disbursement';
+	const name = p.rail === 'mobile_money' ? (OPERATOR[p.operator] || 'Mobile money') : p.rail?.startsWith('pispi') ? 'PI-SPI' : (PSP[p.provider] || p.provider || '');
+	return h('span', { class: 'av', title: `${name} · ${out ? 'payout (out)' : 'collection (in)'}` },
+		f ? h('img', { src: `/providers/${f}.png`, alt: name, width: 30, height: 30 }) : h('span', { class: 'av-txt' }, (PSP[p.provider] || p.provider || '?').slice(0, 2)),
+		h('span', { class: `av-dir ${out ? 'out' : 'in'}`, 'aria-hidden': 'true' }, out ? '↑' : '↓'));
+};
 const icon = (p) => { const f = p.rail === 'mobile_money' ? ICON[p.operator] : p.rail.startsWith('pispi') ? 'pispi' : null; return f ? h('img', { class: 'logo', src: `/providers/${f}.png`, alt: '', width: 20, height: 20 }) : null; };
 const COUNTRY = { CIV: ['ci', "Côte d'Ivoire"], SEN: ['sn', 'Senegal'], BFA: ['bf', 'Burkina Faso'] };
 const origin = (p) => { const c = COUNTRY[p.country]; return c ? h('span', { class: 'chan' }, h('img', { class: 'flag', src: `/country/${c[0]}.png`, alt: '', width: 20, height: 20 }), h('span', { title: c[1] }, p.country)) : h('span', { class: 'muted' }, '–'); };
@@ -273,7 +282,7 @@ async function overview(main) {
 function paymentList(rows) {
 	if (!rows.length) return h('div', { class: 'card empty' }, 'No payments yet.');
 	return h('div', { class: 'list' }, rows.map((p) => h('div', { class: 'li click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
-		h('span', { class: `dir ${p.object === 'collection' ? 'in' : 'out'}`, title: p.object === 'collection' ? 'Collection (in)' : 'Disbursement (out)' }, p.object === 'collection' ? '↓' : '↑'),
+		avatar(p),
 		h('div', { class: 'grow min0' }, h('div', { class: 'ellipsis' }, h('span', { class: 'mono' }, p.reference)), h('div', { class: 'muted small ellipsis' }, p.tenant, ' · ', channel(p), ' · ', ago(p.createdAt))),
 		h('span', { class: 'num strong' }, fmtAmount(p.amount)), badge(p.status))));
 }
@@ -496,7 +505,7 @@ function feedItem(e, { compact = false, onChange } = {}) {
 	const body = !compact && e.body ? h('details', { class: 'ev-body' }, h('summary', {}, e.source === 'callback' ? 'Body as received' : 'Payload'), h('pre', {}, pretty(e.body))) : null;
 	return h('li', { class: `ev${e.problem ? ' problem' : ''}` },
 		h('time', { class: 'ev-time', datetime: new Date(e.at).toISOString(), title: fmtTime(e.at) }, compact ? ago(e.at) : clock(e.at)),
-		h('span', { class: `src src-${e.source}`, title: label }, h('span', { 'aria-hidden': 'true' }, glyph), compact ? null : ` ${label}`),
+		e.source === 'payment' && compact ? avatar(e) : h('span', { class: `src src-${e.source}`, title: label }, h('span', { 'aria-hidden': 'true' }, glyph), compact ? null : ` ${label}`),
 		h('div', { class: 'ev-main' }, h('div', { class: 'ev-title' }, title), h('div', { class: 'ev-meta' }, meta.filter(Boolean).flatMap((m, i) => i ? [' · ', m] : [m])), body),
 		h('div', { class: 'ev-side' }, h('span', { class: `badge s-${e.source === 'callback' ? (e.problem ? 'failed' : 'ok') : e.status}` }, e.type === 'late_completion' ? 'late' : e.status.replace(/_/g, ' ')), retry));
 }

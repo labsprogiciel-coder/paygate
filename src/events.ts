@@ -20,7 +20,7 @@ export interface FeedItem {
 	detail: string | null; // a short note: the event detail, or the last delivery error
 	attempts: number | null;
 	body: string | null; // the callback body or the webhook payload, as stored
-	kind?: string; amount?: number; provider?: string;
+	kind?: string; amount?: number; provider?: string; rail?: string; operator?: string | null;
 }
 
 export interface FeedQuery { sources?: Source[]; problems?: boolean; tenant?: string | null; payment?: string | null; before?: string | null; limit?: number }
@@ -46,12 +46,12 @@ export async function eventFeed(env: Env, q: FeedQuery = {}): Promise<{ data: Fe
 		if (q.tenant) { where.push('p.tenant_id = ?'); binds.push(q.tenant); }
 		if (q.payment) { where.push('e.payment_id = ?'); binds.push(q.payment); }
 		if (q.problems) where.push(`e.type IN (${PAYMENT_PROBLEMS.map(() => '?').join(', ')})`), binds.push(...PAYMENT_PROBLEMS);
-		runs.push(env.DB.prepare(`SELECT ${fid} AS fid, e.payment_id, e.type, e.actor, e.detail, e.created_at, p.tenant_id, p.kind, p.amount, p.provider
+		runs.push(env.DB.prepare(`SELECT ${fid} AS fid, e.payment_id, e.type, e.actor, e.detail, e.created_at, p.tenant_id, p.kind, p.amount, p.provider, p.rail, p.operator
 			FROM payment_events e JOIN payments p ON p.id = e.payment_id WHERE ${where.join(' AND ')} ORDER BY e.created_at DESC, ${fid} DESC LIMIT ?`).bind(...binds, take)
-			.all<{ fid: string; payment_id: string; type: string; actor: string; detail: string | null; created_at: number; tenant_id: string; kind: string; amount: number; provider: string }>()
+			.all<{ fid: string; payment_id: string; type: string; actor: string; detail: string | null; created_at: number; tenant_id: string; kind: string; amount: number; provider: string; rail: string; operator: string | null }>()
 			.then(({ results }) => results.map((r) => ({
 				source: 'payment' as const, id: r.fid, at: r.created_at, type: r.type, status: r.type, problem: PAYMENT_PROBLEMS.includes(r.type),
-				tenant: r.tenant_id, paymentId: r.payment_id, actor: r.actor, detail: r.detail, attempts: null, body: null, kind: r.kind, amount: r.amount, provider: r.provider,
+				tenant: r.tenant_id, paymentId: r.payment_id, actor: r.actor, detail: r.detail, attempts: null, body: null, kind: r.kind, amount: r.amount, provider: r.provider, rail: r.rail, operator: r.operator,
 			}))));
 	}
 	if (want.has('callback')) {

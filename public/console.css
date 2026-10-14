@@ -175,3 +175,14 @@ td .sk { min-width: 36px; } .sk-row td { padding-top: 14px; padding-bottom: 14px
 /* pager */
 .pager { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .pager .grow { flex: 1; } .pager select { padding: 4px 8px; font-size: 13px; }
+
+/* provider avatars in the recent lists */
+.av { position: relative; width: 30px; height: 30px; flex: none; display: inline-block; }
+.av img, .av-txt { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; border: 1px solid var(--line); }
+.av-txt { background: var(--info-bg); color: var(--info); font-size: 11px; font-weight: 700; }
+.av-dir { position: absolute; right: -4px; bottom: -3px; width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700;
+  background: var(--panel); color: var(--ink); box-shadow: 0 0 0 2px var(--panel); border: 1px solid var(--line); }
+.li { grid-template-columns: 30px minmax(0, 1fr) auto 96px; }
+.feed.compact .ev { grid-template-columns: 62px 30px minmax(0, 1fr) auto; align-items: center; }
+.feed.compact .src { text-align: center; }
+.sk-sq { border-radius: 50%; width: 30px; height: 30px; }
