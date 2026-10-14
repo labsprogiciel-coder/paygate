@@ -211,3 +211,9 @@ table.ch tr.grp td { border-top: 1px solid var(--line); }
 .acct-val { display: block; font-family: var(--mono); font-size: 13px; margin: 6px 0 2px; }
 @media (max-width: 1100px) { .psp-body { grid-template-columns: minmax(0, 1fr); } .panel + .panel { border-left: 0; border-top: 1px solid var(--line); } }
 .psp-head > .grow { flex: 1; }
+
+/* stacked channel logos: channels on the same terms share a row */
+.stack { display: inline-flex; flex: none; }
+.stack .logo { border-radius: 50%; box-shadow: 0 0 0 2px var(--panel); background: var(--panel); }
+.stack .logo + .logo { margin-left: -7px; }
+table.ch td { vertical-align: middle; }

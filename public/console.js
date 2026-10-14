@@ -314,12 +314,23 @@ function pspSection(p, rows, floor) {
 	const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 44, height: 44 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
 	const kpi = (label, value, sub, warn) => h('div', { class: 'kpi' }, h('div', { class: 'pl' }, label), h('div', { class: `kv-big${warn ? ' bad-text' : ''}` }, value), h('div', { class: 'ps' }, sub));
 
+	// within a country, channels with the same collection and payout terms share one row: their logos stack, the limits show once
+	const groups = [];
+	for (const c of p.channels || []) {
+		const key = `${c.country}|${JSON.stringify(c.collect)}|${JSON.stringify(c.payout)}|${c.operator === 'bank' ? c.code : 'mm'}`;
+		const g = groups.find((x) => x.key === key);
+		if (g) g.items.push(c); else groups.push({ key, country: c.country, items: [c] });
+	}
+	const logo = (c) => h('img', { class: 'logo', src: `/providers/${c.operator === 'bank' ? 'pispi' : c.operator}.png`, alt: '', title: chName(c), width: 22, height: 22 });
 	const channels = p.channels
-		? h('table', { class: 'ch' }, h('thead', {}, h('tr', {}, h('th', {}, 'Country'), h('th', {}, 'Channel'), h('th', {}, 'Collections'), h('th', {}, 'Payouts'))),
-			h('tbody', {}, p.channels.map((c, i) => h('tr', { class: i && p.channels[i - 1].country !== c.country ? 'grp' : null },
-				h('td', {}, i && p.channels[i - 1].country === c.country ? null : h('span', { class: 'chan' }, flag(c.country), COUNTRY[c.country]?.[1] || c.country)),
-				h('td', {}, h('span', { class: 'chan' }, h('img', { class: 'logo', src: `/providers/${c.operator === 'bank' ? 'pispi' : c.operator}.png`, alt: '', width: 20, height: 20 }), chName(c))),
-				h('td', {}, chOp(c.collect)), h('td', {}, c.operator === 'bank' && !c.payout ? h('span', { class: 'muted small' }, 'Not offered') : chOp(c.payout))))))
+		? h('table', { class: 'ch' }, h('thead', {}, h('tr', {}, h('th', {}, 'Country'), h('th', {}, 'Channels'), h('th', {}, 'Collections'), h('th', {}, 'Payouts'))),
+			h('tbody', {}, groups.map((g, i) => {
+				const c = g.items[0], first = !i || groups[i - 1].country !== g.country;
+				return h('tr', { class: i && first ? 'grp' : null },
+					h('td', {}, first ? h('span', { class: 'chan' }, flag(g.country), COUNTRY[g.country]?.[1] || g.country) : null),
+					h('td', {}, h('span', { class: 'chan' }, h('span', { class: 'stack' }, g.items.map(logo)), g.items.map(chName).join(', '))),
+					h('td', {}, chOp(c.collect)), h('td', {}, c.operator === 'bank' && !c.payout ? h('span', { class: 'muted small' }, 'Not offered') : chOp(c.payout)));
+			})))
 		: h('div', { class: 'alert bad' }, `Could not read the channel configuration: ${p.channelsError}`);
 
 	const account = (a) => a.kind === 'alias'
