@@ -5,6 +5,7 @@ import { getRow, view, type PaymentRow } from './payments.ts';
 import { listDead, retryDelivery } from './webhooks.ts';
 import { resolvePayment } from './reconcile.ts';
 import { loadFloat } from './float.ts';
+import { attention, eventFeed, SOURCES, type Source } from './events.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
 import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
@@ -96,6 +97,12 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		];
 		return json({ data: list, last24h: results });
 	}
+	if (path === '/admin/events' && m === 'GET') {
+		const sources = (url.searchParams.get('source') ?? '').split(',').filter((s): s is Source => (SOURCES as readonly string[]).includes(s));
+		return json(await eventFeed(env, { sources, problems: url.searchParams.get('problems') === '1', tenant: url.searchParams.get('tenant'), payment: url.searchParams.get('payment'),
+			before: url.searchParams.get('before'), limit: Number(url.searchParams.get('limit')) || 50 }));
+	}
+	if (path === '/admin/attention' && m === 'GET') return json(await attention(env));
 	if (path === '/admin/provider-events' && m === 'GET') return json({ data: (await env.DB.prepare(`SELECT id, provider, path, accepted, body, received_at FROM provider_events ORDER BY id DESC LIMIT 100`).all()).results });
 	return null;
 }
