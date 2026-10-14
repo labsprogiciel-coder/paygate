@@ -15,7 +15,7 @@
   "vars": {
     "LIVE": "false",
     // "sandbox" pretends (no money moves, dev only, refused with LIVE=true) or "pawapay" (needs the PAWAPAY_API_TOKEN secret)
-    "PROVIDER_MODE": "sandbox",
+    "PROVIDER_MODE": "pawapay",
     // pawaPay API base: https://api.sandbox.pawapay.io (no money moves) or https://api.pawapay.io (production: only with LIVE=true)
     "PAWAPAY_BASE_URL": "https://api.sandbox.pawapay.io",
     // the largest single payment a tenant may make unless its own max_amount says otherwise (XOF)

@@ -8,7 +8,7 @@ import type { Providers } from './types.ts';
  * combinations itself (its sandbox URL with LIVE=true, its production URL without it).
  */
 export function getProviders(env: Env, deps: PawapayDeps = {}): Providers {
-	const mode = env.PROVIDER_MODE || 'sandbox';
+	const mode: string = env.PROVIDER_MODE || 'sandbox'; // widened: the generated Env narrows the var to its configured value
 	if (mode === 'sandbox') {
 		if (on(env.LIVE)) throw new Error('PROVIDER_MODE=sandbox cannot be used with LIVE=true');
 		return { mode, channels: sandboxChannels, collect: sandboxCollect, disburse: sandboxDisburse, parseCallback: async () => null }; // the sandbox has no callbacks
