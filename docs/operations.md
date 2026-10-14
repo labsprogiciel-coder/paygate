@@ -13,6 +13,16 @@ npx wrangler secret put ALERT_WEBHOOK_URL        # Slack or Discord incoming web
 npm run deploy
 ```
 
+### Operator sign-in with Clerk
+
+Optional; without it the console asks for `ADMIN_API_KEY`. With it, operators sign in with their own Clerk account and their actions are recorded under their Clerk user id. `ADMIN_API_KEY` keeps working for scripts and as a break-glass login ("Use the operator key instead"); leave it unset to allow Clerk only.
+
+1. Create a Clerk application. In **Configure → Restrictions**, set sign-up to **Restricted** (or use an allowlist): only invited people should get accounts.
+2. In `wrangler.jsonc` vars, set `CLERK_PUBLISHABLE_KEY` (`pk_live_…`, not a secret).
+3. `npx wrangler secret put CLERK_SECRET_KEY` (`sk_live_…`; session keys are fetched from Clerk and cached), or instead `CLERK_JWT_KEY` with the PEM public key from **API keys → Show JWT public key** to check sessions with no network call.
+4. Have each operator sign in once: the console shows their Clerk user id. Add it to `CLERK_OPERATOR_IDS` (comma-separated) and deploy. An empty list lets nobody in.
+5. In Clerk, add the Worker's URL as an allowed origin for production instances. Session tokens are only accepted when issued for the Worker's own origin.
+
 PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`. Reading and sending are separate switches.
 
 ## Add a product

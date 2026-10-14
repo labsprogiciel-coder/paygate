@@ -28,7 +28,7 @@ It was extracted from Relay (`~/Downloads/design_handoff_relay_pwa/relay`), wher
 
 ## Operator console
 
-Open the Worker's root URL (`npm run dev` → http://localhost:8787) and sign in with `ADMIN_API_KEY`. The key is kept in that tab's `sessionStorage` only. From there: float per country, payments needing a person (unknown outcomes, manual resolve with a required note), payment history, tenants (create, edit, suspend, API keys shown once, webhook secret reveal/rotate), undeliverable webhooks (retry), and the raw provider callbacks. It is plain JS with a strict CSP (`public/_headers`), no build step. Put the Worker behind Cloudflare Access if the URL is public.
+Open the Worker's root URL (`npm run dev` → http://localhost:8787) and sign in with Clerk (when configured, see [docs/operations.md](docs/operations.md#operator-sign-in-with-clerk)) or with `ADMIN_API_KEY`. Only Clerk users listed in `CLERK_OPERATOR_IDS` are let in, and actions they take are recorded under their Clerk user id. The admin key is kept in that tab's `sessionStorage` only. From there: float per country, payments needing a person (unknown outcomes, manual resolve with a required note), payment history, tenants (create, edit, suspend, API keys shown once, webhook secret reveal/rotate), undeliverable webhooks (retry), and the raw provider callbacks. It is plain JS with a strict CSP (`public/_headers`; with Clerk on, the Worker serves the page with a CSP that also allows the Clerk Frontend API host), no build step. Put the Worker behind Cloudflare Access if the URL is public.
 
 ## Using it
 
@@ -39,7 +39,7 @@ npm install
 cp .dev.vars.example .dev.vars        # set ADMIN_API_KEY and WEBHOOK_MASTER_SECRET
 npm run db:migrate:local
 npm run dev                           # PROVIDER_MODE=sandbox: nothing moves, the phone number's last digits pick the outcome
-npm test                              # 62 tests, node:test, no network
+npm test                              # 68 tests, node:test, no network
 npm run check                         # tsc
 ```
 
@@ -54,7 +54,7 @@ npm run check                         # tsc
 | `src/webhooks.ts`, `signing.ts` | Outbound events: outbox, retries, signature |
 | `src/callbacks.ts` | Provider callbacks in |
 | `src/reconcile.ts`, `float.ts` | Settling what callbacks missed; wallet monitoring |
-| `src/tenants.ts`, `admin.ts` | Tenants, API keys, webhook secrets, the operator API |
+| `src/tenants.ts`, `admin.ts`, `auth.ts` | Tenants, API keys, webhook secrets, the operator API, operator sign-in with Clerk |
 | `public/` | The operator console (static files: `index.html`, `console.js`, `console.css`), served at `/` by the Worker's assets; it only calls `/admin/*` |
 | `migrations/` | D1 schema |
 

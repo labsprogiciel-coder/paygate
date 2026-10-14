@@ -1,9 +1,13 @@
-// Paygate operator console. Talks to /admin/* with the operator key, which lives in sessionStorage only (gone when the tab closes).
+// Paygate operator console. Talks to /admin/* with a Clerk session token when the Worker has Clerk on (it puts the publishable key in a
+// <meta>), or with the operator key, which lives in sessionStorage only (gone when the tab closes).
 // Everything from the API is rendered with textContent, never as HTML: provider callback bodies are untrusted.
 
 const store = { get: () => { try { return sessionStorage.getItem('pg_admin') } catch { return null } }, set: (v) => { try { v ? sessionStorage.setItem('pg_admin', v) : sessionStorage.removeItem('pg_admin') } catch {} } };
 let key = store.get();
 const app = document.getElementById('app');
+const meta = (n) => document.querySelector(`meta[name="${n}"]`)?.content || null;
+const CLERK = { pk: meta('clerk-publishable-key'), host: meta('clerk-frontend-api') };
+let clerk = null; // window.Clerk once loaded
 
 function h(tag, attrs, ...kids) {
 	const el = document.createElement(tag);
@@ -21,10 +25,13 @@ function h(tag, attrs, ...kids) {
 const put = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((x) => x != null && x !== false));
 
 class AuthError extends Error {}
+class NotOperator extends Error { constructor(userId) { super('This account is not an operator'); this.userId = userId } }
+const bearer = async () => key || (clerk?.session ? await clerk.session.getToken() : null);
 async function api(method, path, body) {
-	const res = await fetch(path, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+	const res = await fetch(path, { method, headers: { authorization: `Bearer ${await bearer()}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
 	const data = await res.json().catch(() => ({}));
 	if (res.status === 401) throw new AuthError(data?.error?.message || 'Unauthorized');
+	if (res.status === 403 && data?.error?.code === 'not_operator') throw new NotOperator(data.error.userId);
 	if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
 	return data;
 }
@@ -68,23 +75,68 @@ function confirmModal(title, text, label, onYes) {
 const field = (label, input, hint) => h('div', { class: 'field' }, h('label', {}, label, hint ? h('small', {}, ` ${hint}`) : null), input);
 
 // ---- login ----------------------------------------------------------------------------------------------------------------------
-function login(msg) {
+const loadScript = (src) => new Promise((ok, fail) => document.head.append(h('script', { src, crossorigin: 'anonymous', 'data-clerk-publishable-key': CLERK.pk, onload: ok, onerror: () => fail(new Error(`Could not load ${src}`)) })));
+/** Clerk's UI, then Clerk itself, from the Frontend API host the Worker named (the page's CSP allows only that host). */
+async function loadClerk() {
+	if (clerk) return clerk;
+	await loadScript(`https://${CLERK.host}/npm/@clerk/ui@1/dist/ui.browser.js`);
+	await loadScript(`https://${CLERK.host}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`);
+	await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } });
+	return (clerk = window.Clerk);
+}
+async function signOut(msg) {
+	store.set(null); key = null; started = false; location.hash = '';
+	if (clerk?.session) await clerk.signOut().catch(() => {});
+	login(msg);
+}
+
+const login = (msg) => CLERK.pk ? clerkLogin(msg) : keyLogin(msg);
+
+function keyLogin(msg) {
 	const input = h('input', { type: 'password', autocomplete: 'off', placeholder: 'ADMIN_API_KEY', 'aria-label': 'Operator key' });
 	const form = h('form', { class: 'login', onsubmit: async (e) => {
 		e.preventDefault(); key = input.value.trim();
-		try { await api('GET', '/admin/float'); store.set(key); start() } catch (err) { key = null; login(err instanceof AuthError ? 'That key was not accepted.' : err.message) }
+		try { await api('GET', '/admin/float'); store.set(key); start() } catch (err) { key = null; keyLogin(err instanceof AuthError ? 'That key was not accepted.' : err.message) }
 	} }, h('h1', {}, 'Paygate'), h('p', { class: 'sub' }, 'Operator console. The key stays in this tab only.'), msg ? h('div', { class: 'alert bad' }, msg) : null,
-		field('Operator key', input), h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'submit' }, 'Sign in')));
+		field('Operator key', input), h('div', { class: 'actions' },
+			CLERK.pk ? h('button', { class: 'btn', type: 'button', onclick: () => clerkLogin() }, 'Back') : null,
+			h('button', { class: 'btn primary', type: 'submit' }, 'Sign in')));
 	put(app, form); input.focus();
+}
+
+async function clerkLogin(msg) {
+	const box = h('div', { class: 'clerk' }, h('p', { class: 'muted' }, 'Loading…'));
+	put(app, h('div', { class: 'login' }, h('h1', {}, 'Paygate'), h('p', { class: 'sub' }, 'Operator console'), msg ? h('div', { class: 'alert bad' }, msg) : null, box,
+		h('p', { class: 'muted small' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); keyLogin() } }, 'Use the operator key instead'))));
+	try {
+		const c = await loadClerk();
+		if (c.session) return start();
+		box.replaceChildren();
+		c.mountSignIn(box, { routing: 'virtual', fallbackRedirectUrl: '/' });
+		const off = c.addListener(({ session }) => { if (session && !key) { off(); c.unmountSignIn(box); start() } });
+	} catch (err) { put(box, h('div', { class: 'alert bad' }, err.message)) }
+}
+
+function notOperator(userId) {
+	const id = h('code', { class: 'secret' }, userId || '?');
+	put(app, h('div', { class: 'login' }, h('h1', {}, 'Paygate'), h('div', { class: 'alert warn' }, 'You are signed in, but this account is not an operator.'),
+		h('p', {}, 'Ask an operator to add your Clerk user id to CLERK_OPERATOR_IDS:'), id,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => copy(userId) }, 'Copy id'), h('button', { class: 'btn primary', onclick: () => signOut() }, 'Sign out'))));
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
 const PAGES = { overview: ['Overview', overview], payments: ['Payments', payments], tenants: ['Tenants', tenants], webhooks: ['Failed webhooks', webhooks], callbacks: ['Provider callbacks', callbacks] };
 let attention = { unknown: 0, dead: 0 };
 
+let started = false;
 async function start() {
-	if (!key) return login();
-	window.addEventListener('hashchange', route);
+	if (!key) {
+		if (!CLERK.pk) return login();
+		const c = await loadClerk().catch(() => null);
+		if (!c?.session) return login();
+	}
+	if (!started) window.addEventListener('hashchange', route);
+	started = true;
 	route();
 }
 async function route() {
@@ -97,12 +149,13 @@ async function route() {
 		return h('a', { href: `#/${id}`, 'aria-current': id === page ? 'page' : null }, label, n ? h('span', { class: 'count' }, n) : null);
 	}));
 	put(app, h('div', { class: 'shell' }, h('aside', { class: 'side' }, h('div', { class: 'brand' }, 'Paygate', h('small', {}, 'Operator console')), nav, h('div', { class: 'spacer' }),
-		h('button', { class: 'btn sm', onclick: () => { store.set(null); key = null; location.hash = ''; login() } }, 'Sign out')), main));
+		h('button', { class: 'btn sm', onclick: () => signOut() }, 'Sign out')), main));
 	try {
 		await PAGES[page][1](main);
 		refreshAttention(nav);
 	} catch (e) {
-		if (e instanceof AuthError) { store.set(null); key = null; return login('Session ended. Sign in again.') }
+		if (e instanceof AuthError) return signOut('Session ended. Sign in again.');
+		if (e instanceof NotOperator) return notOperator(e.userId);
 		put(main, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: route }, 'Retry'));
 	}
 }
