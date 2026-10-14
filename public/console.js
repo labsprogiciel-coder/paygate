@@ -315,29 +315,69 @@ function resolveModal(p, outcomes, done) {
 // ---- tenants --------------------------------------------------------------------------------------------------------------------
 async function tenants(main) {
 	const { data } = await api('GET', '/admin/tenants');
-	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null) }, 'New tenant')),
+	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null, data.map((t) => t.id)) }, 'New tenant')),
 		table([{ label: 'Id' }, { label: 'Name' }, { label: 'Status' }, { label: 'Webhook' }, { label: 'Max payment', num: true }, { label: 'Created' }],
 			data.map((t) => h('tr', { class: 'click', tabindex: 0, onclick: () => tenantDrawer(t.id), onkeydown: (e) => { if (e.key === 'Enter') tenantDrawer(t.id) } },
 				h('td', { class: 'mono' }, t.id), h('td', {}, t.name), h('td', {}, badge(t.status)), h('td', { class: 'mono' }, t.webhook_url || '–'), h('td', { class: 'num' }, t.max_amount ? fmtAmount(t.max_amount) : 'default'), h('td', {}, fmtTime(t.created_at)))),
 			'No tenants yet. Create one for each product that will use Paygate.'));
 }
-function tenantForm(t) {
-	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'relay', pattern: '[a-z][a-z0-9-]{1,31}' }), name: h('input', { value: t?.name || '', maxlength: 80 }),
+const SLUG = /^[a-z][a-z0-9-]{1,31}$/;
+/** "Côte Pay Shop" -> "cote-pay-shop": what the server accepts as a tenant id, made unique among `taken`. */
+function slugFor(name, taken) {
+	const base = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+/, '').slice(0, 28).replace(/-+$/, '');
+	if (base.length < 2) return '';
+	let id = base;
+	for (let i = 2; taken.includes(id); i++) id = `${base}-${i}`;
+	return id;
+}
+
+function tenantForm(t, taken = []) {
+	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'made from the name', pattern: SLUG.source.slice(1, -1), spellcheck: 'false', autocomplete: 'off' }),
+		name: h('input', { value: t?.name || '', maxlength: 80, placeholder: t ? null : 'Courtly', autocomplete: 'off' }),
 		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), max: h('input', { type: 'number', min: 100, step: 1, value: t?.max_amount || '', placeholder: 'gateway default' }),
-		ns: h('input', { value: '', placeholder: 'leave empty for new products' }) };
-	const err = h('div');
-	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), t ? null : field('Id', f.id, '(permanent, lowercase)'), field('Name', f.name), field('Webhook URL', f.webhook, '(https)'), field('Max single payment', f.max, '(FCFA)'),
-		t ? null : field('ID namespace', f.ns, '(only for products migrated from another gateway)'), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try {
-				const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
-				if (t) await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max });
-				else await api('POST', '/admin/tenants', { id: f.id.value.trim(), name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null });
-				m.close(); toast('Saved'); route();
-				if (!t) tenantDrawer(f.id.value.trim());
-			} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-		} }, 'Save'))], { center: true });
+		ns: h('input', { value: '', placeholder: 'leave empty for new products', spellcheck: 'false' }),
+		key: h('input', { type: 'checkbox', checked: true }) };
+	const err = h('div'), idHint = h('small', { class: 'hint' });
+	// the id follows the name until someone types in it
+	let idTouched = false;
+	const checkId = () => {
+		const v = f.id.value.trim();
+		put(idHint, !v ? 'Lowercase letters, digits and dashes. It cannot be changed later.' : !SLUG.test(v) ? h('span', { class: 'bad-text' }, 'Start with a letter; 2 to 32 lowercase letters, digits or dashes.')
+			: taken.includes(v) ? h('span', { class: 'bad-text' }, 'A tenant already has this id.') : [h('code', {}, v), ' is free. It cannot be changed later.']);
+	};
+	if (!t) {
+		f.name.addEventListener('input', () => { if (!idTouched) { f.id.value = slugFor(f.name.value, taken); checkId() } });
+		f.id.addEventListener('input', () => { idTouched = f.id.value !== ''; f.id.value = f.id.value.toLowerCase(); checkId() });
+		checkId();
+	}
+	const save = h('button', { class: 'btn primary', onclick: async (e) => {
+		e.target.disabled = true;
+		try {
+			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
+			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max }); m.close(); toast('Saved'); route(); return; }
+			const id = f.id.value.trim();
+			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null });
+			m.close(); route();
+			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
+		} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
+	} }, t ? 'Save' : 'Create tenant');
+	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint),
+		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
+		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
+		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, '(only for products migrated from another gateway)')), err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true });
+	f.name.focus();
+}
+
+/** Everything a new product needs to connect, in one place: its API key (shown once) and its webhook secret. */
+async function connectModal(id) {
+	let key, secret;
+	try { [key, secret] = await Promise.all([api('POST', `/admin/tenants/${id}/keys`, { label: 'default' }), api('GET', `/admin/tenants/${id}/webhook-secret`)]) }
+	catch (x) { toast(`Tenant created, but: ${x.message}`); return tenantDrawer(id) }
+	const row = (label, value, note) => [h('label', {}, label, note ? h('small', {}, ` ${note}`) : null), h('div', { class: 'copyrow' }, h('code', { class: 'secret' }, value), h('button', { class: 'btn sm', onclick: () => copy(value) }, 'Copy'))];
+	const m = overlay([h('h2', {}, `${id} is ready to connect`), h('p', { class: 'muted' }, 'Give these to the product. The API key is shown only this once: only its hash is stored.'),
+		row('API key', key.key, '(Authorization: Bearer …)'), row('Webhook signing secret', secret.secret, '(can be shown again)'),
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { m.close(); tenantDrawer(id) } }, 'Open tenant'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 async function tenantDrawer(id) {
 	const d = overlay(h('p', { class: 'muted' }, 'Loading…'));

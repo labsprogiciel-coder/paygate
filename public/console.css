@@ -151,3 +151,9 @@ label.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; fo
 .s-rejected, .s-mismatch { background: var(--bad-bg); color: var(--bad); }
 .s-created, .s-accepted, .s-resolved { background: var(--info-bg); color: var(--info); }
 .s-late_completion { background: var(--warn-bg); color: var(--warn); }
+
+/* tenant form */
+.hint { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; } .hint code { font-family: var(--mono); }
+label.check.mt14 { margin-top: 14px; }
+.adv { margin-top: 12px; } .adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.copyrow { display: flex; gap: 8px; align-items: center; } .copyrow .secret { flex: 1; min-width: 0; }
