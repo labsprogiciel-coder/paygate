@@ -131,6 +131,7 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `GET /admin/webhooks/dead`, `POST /admin/webhooks/{id}/retry` | undeliverable events |
 | `GET /admin/float`, `GET /admin/provider-events` | wallets; the last 100 provider callbacks as received |
 | `GET /admin/events?source=&problems=1&tenant=&payment=&before=&limit=` | one feed, newest first: payment status changes (`payment`), provider callbacks (`callback`), webhooks to tenants (`webhook`). `source` is a comma-separated list; `problems=1` keeps what needs a person (failed, unknown, mismatch, late payments; rejected callbacks; dead webhooks); pass the response's `next` as `before` for the next page |
+| `GET /admin/providers` | every PSP: `channels` (each operator per country, `collect`/`payout` as `{ status, min, max }` or null when not on the account; null with `channelsError` when the configuration cannot be read), `accounts` (pawaPay payout wallets per country with balance, status and cover; PI-SPI's receiving alias, masked) and `accountsNote`, plus `last24h` totals |
 | `GET /admin/attention` | `{ unknown, deadWebhooks, rejectedCallbacks24h }` |
 
 ## Provider callbacks (not for products)

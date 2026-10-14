@@ -151,7 +151,8 @@ const skDrawer = () => busy(h('div', { class: 'bar' }, h('span', { class: 'sk sk
 	Array.from({ length: 8 }, (_, i) => [h('dt', {}, bar(i, 'sk-s')), h('dd', {}, bar(i + 3))]))), h('div', { class: 'card' }, bar(1), bar(4), bar(2)));
 const SKELETON = {
 	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
-	dashboard: () => [skHead(), busy(h('div', { class: 'pgrid' }, [0, 1].map((i) => h('div', { class: 'card pcard' }, h('span', { class: 'sk sk-h1' }), bar(i), bar(i + 3), bar(i + 5), h('span', { class: 'sk sk-big' })))))],
+	providers: () => [skHead(), ...[0, 1].map((i) => busy(h('section', { class: 'psp' }, h('header', { class: 'psp-head' }, h('span', { class: 'sk sk-sq' }), h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))),
+		h('div', { class: 'psp-body' }, h('div', { class: 'panel' }, Array.from({ length: 5 }, (_, r) => bar(r + i, 'sk-l'))), h('div', { class: 'panel' }, Array.from({ length: 3 }, (_, r) => bar(r + i + 2, 'sk-l')))))))],
 	payments: () => [skHead(), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
 	events: () => [skHead(), skFeed(10)],
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
@@ -188,7 +189,7 @@ function pager({ fetch, render, skeleton, noun = 'rows' }) {
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
-const PAGES = { overview: ['Overview', overview], dashboard: ['Dashboard', dashboard], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
+const PAGES = { overview: ['Overview', overview], providers: ['Providers', providersPage], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
 let attention = { unknown: 0, problems: 0 };
 
 let started = false;
@@ -249,7 +250,7 @@ async function overview(main) {
 	if (att.unknown) todo.push(['bad', plural(att.unknown, 'payout'), 'with an unknown outcome', 'Money may have been sent. A person must decide.', '#/payments?status=unknown', 'Resolve']);
 	if (att.deadWebhooks) todo.push(['warn', plural(att.deadWebhooks, 'webhook'), 'not delivered', 'A product was not told about a payment.', '#/events?source=webhook&problems=1', 'Retry']);
 	if (att.rejectedCallbacks24h) todo.push(['warn', plural(att.rejectedCallbacks24h, 'callback'), 'rejected (24 h)', 'Failed the signature or shape check.', '#/events?source=callback&problems=1', 'Inspect']);
-	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, '#/dashboard', 'View']);
+	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, '#/providers', 'View']);
 	const attentionBlock = todo.length
 		? h('div', { class: 'todo' }, todo.map(([level, what, state, why, href, action]) => h('div', { class: `todo-item ${level}` },
 			h('div', { class: 'grow' }, h('strong', {}, what), ` ${state}`, h('div', { class: 'todo-why' }, why)), href ? h('a', { class: 'btn sm', href }, action) : null)))
@@ -287,42 +288,62 @@ function paymentList(rows) {
 		h('span', { class: 'num strong' }, fmtAmount(p.amount)), badge(p.status))));
 }
 
-function floatBlock(flt) {
-	if (!flt.rows) return null;
-	return h('div', { class: 'wallets' }, h('div', { class: 'wl' }, h('span', { class: 'pl' }, 'Payout float'), h('span', { class: 'pl' }, `floor ${fmtAmount(flt.floor)}`)),
-		flt.rows.map((r) => h('div', { class: 'wallet' },
-			h('span', { class: 'chan' }, COUNTRY[r.country] ? h('img', { class: 'flag', src: `/country/${COUNTRY[r.country][0]}.png`, alt: '', width: 20, height: 20 }) : null, r.country),
-			h('span', { class: 'wbal' }, r.balance === null ? 'No wallet' : fmtAmount(r.balance)),
-			h('span', { class: 'muted wsub' }, r.coverDays === null ? 'no recent payouts' : `${r.coverDays} days cover`), badge(r.status),
-			r.committed ? h('span', { class: 'muted wnote' }, `${fmtAmount(r.committed)} committed (${r.committedCount})`) : null,
-			...r.reasons.map((x) => h('span', { class: 'bad-text wnote' }, x)))));
-}
-// ---- dashboard ------------------------------------------------------------------------------------------------------------------
-async function dashboard(main) {
-	const [flt, prov] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers')]);
-	put(main, head('Dashboard', `Payment providers, how they are set up, and the payout float (floor ${fmtAmount(flt.floor)}). Figures are for the last 24 hours.`, h('button', { class: 'btn', onclick: route }, 'Refresh')),
-		providerCards(prov, flt));
+// ---- providers ------------------------------------------------------------------------------------------------------------------
+// One section per PSP: what each channel can do on the account right now, and the accounts money is paid from.
+const CH_STATUS = { OPERATIONAL: ['Open', 's-completed'], DELAYED: ['Delayed', 's-low'], CLOSED: ['Closed', 's-failed'] };
+const chOp = (op) => {
+	if (!op) return h('span', { class: 'badge s-idle' }, 'Not on account');
+	const [label, cls] = CH_STATUS[op.status] || [op.status.toLowerCase(), 's-idle'];
+	const lim = op.min != null || op.max != null ? `${op.min != null ? compact(op.min) : '0'} – ${op.max != null ? compact(op.max) : 'no max'}` : null;
+	return h('span', { class: 'chop' }, h('span', { class: `badge ${cls}` }, label), lim ? h('span', { class: 'muted small num' }, lim) : null);
+};
+const chName = (c) => c.operator === 'bank' ? (c.code === 'PISPI_RTP' ? 'Bank · payment request' : 'Bank · QR code') : (OPERATOR[c.operator] || c.operator);
+const flag = (iso3) => COUNTRY[iso3] ? h('img', { class: 'flag', src: `/country/${COUNTRY[iso3][0]}.png`, alt: '', width: 20, height: 20 }) : null;
+const ENV = { Live: 's-completed', Sandbox: 's-low', Simulated: 's-low', Simulator: 's-low', Off: 's-idle' };
+
+async function providersPage(main) {
+	const prov = await api('GET', '/admin/providers');
+	put(main, head('Providers', 'Every payment provider the gateway uses: what each channel can do on the account right now, and the accounts money is paid from. Figures are for the last 24 hours.', h('button', { class: 'btn', onclick: route }, 'Refresh')),
+		prov.data.map((p) => pspSection(p, prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi'))), prov.floor)));
 }
 
-function providerCards(prov, flt) {
-	return h('div', { class: 'pgrid' }, prov.data.map((p) => {
-		const mine = prov.last24h.filter((r) => r.provider === p.id);
-		const count = (f) => mine.filter(f).reduce((n, r) => n + r.n, 0);
-		const bad = count((r) => r.status === 'failed' || r.status === 'unknown'), open = count((r) => r.status === 'processing');
-		const sum = (f) => mine.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
-		const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
-		const stat = (label, big, small, warn) => h('div', { class: 'pstat' }, h('div', { class: 'pl' }, label), h('div', { class: `pv${warn ? ' bad-text' : ''}` }, big), h('div', { class: 'ps' }, small));
-		const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 40, height: 40 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
-		return h('section', { class: `card pcard${p.active ? '' : ' off'}` },
-			h('header', { class: 'phead' }, mark, h('div', { class: 'grow' }, h('h3', {}, p.name), h('p', { class: 'muted m0' }, p.role)), badge(p.active ? 'active' : 'idle')),
-			h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Channels'), h('span', { class: 'chans' }, p.channels.map((c) => h('span', { class: 'chip' }, h('img', { class: 'logo', src: `/providers/${c === 'bank' ? 'pispi' : c}.png`, alt: '', width: 20, height: 20 }), OPERATOR[c] || 'Bank accounts')))),
-			h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Countries'), h('span', { class: 'chans' }, p.countries.map((c) => h('span', { class: 'chip' }, COUNTRY[c] ? h('img', { class: 'flag', src: `/country/${COUNTRY[c][0]}.png`, alt: '', width: 20, height: 20 }) : null, COUNTRY[c]?.[1] || c)))),
-			p.notes.length ? h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Setup'), h('span', { class: 'chans' }, p.notes.map((n) => h('span', { class: 'tag' }, n)))) : null,
-			p.id === flt.provider ? floatBlock(flt) : null,
-			mine.length ? h('div', { class: 'pstats' },
-				stat('Collected', fmtAmount(inn.amount), plural(inn.n, 'payment')), stat('Paid out', fmtAmount(out.amount), plural(out.n, 'payment')),
-				stat('In progress', String(open), 'waiting'), stat('Failed / unknown', String(bad), 'last 24 h', bad > 0)) : h('p', { class: 'muted m0' }, 'No activity in the last 24 hours.'));
-	}));
+function pspSection(p, rows, floor) {
+	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
+	const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
+	const open = sum((r) => r.status === 'processing'), bad = sum((r) => r.status === 'failed' || r.status === 'unknown');
+	const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 44, height: 44 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
+	const kpi = (label, value, sub, warn) => h('div', { class: 'kpi' }, h('div', { class: 'pl' }, label), h('div', { class: `kv-big${warn ? ' bad-text' : ''}` }, value), h('div', { class: 'ps' }, sub));
+
+	const channels = p.channels
+		? h('table', { class: 'ch' }, h('thead', {}, h('tr', {}, h('th', {}, 'Country'), h('th', {}, 'Channel'), h('th', {}, 'Collections'), h('th', {}, 'Payouts'))),
+			h('tbody', {}, p.channels.map((c, i) => h('tr', { class: i && p.channels[i - 1].country !== c.country ? 'grp' : null },
+				h('td', {}, i && p.channels[i - 1].country === c.country ? null : h('span', { class: 'chan' }, flag(c.country), COUNTRY[c.country]?.[1] || c.country)),
+				h('td', {}, h('span', { class: 'chan' }, h('img', { class: 'logo', src: `/providers/${c.operator === 'bank' ? 'pispi' : c.operator}.png`, alt: '', width: 20, height: 20 }), chName(c))),
+				h('td', {}, chOp(c.collect)), h('td', {}, c.operator === 'bank' && !c.payout ? h('span', { class: 'muted small' }, 'Not offered') : chOp(c.payout))))))
+		: h('div', { class: 'alert bad' }, `Could not read the channel configuration: ${p.channelsError}`);
+
+	const account = (a) => a.kind === 'alias'
+		? h('div', { class: 'acct' }, h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), a.label), h('span', { class: 'badge s-info' }, 'collections in')),
+			h('code', { class: 'acct-val' }, a.value), a.participant ? h('div', { class: 'muted small' }, `Participant ${a.participant}`) : null)
+		: h('div', { class: `acct${a.status !== 'ok' ? ' warn' : ''}` },
+			h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), COUNTRY[a.country]?.[1] || a.country), badge(a.status)),
+			h('div', { class: 'acct-bal' }, a.balance === null ? 'No wallet' : fmtAmount(a.balance)),
+			h('div', { class: 'muted small' }, [a.coverDays === null ? 'no recent payouts' : `${a.coverDays} days cover`, a.committed ? `${fmtAmount(a.committed)} committed (${a.committedCount})` : null, `floor ${fmtAmount(floor)}`].filter(Boolean).join(' · ')),
+			a.reasons?.map((x) => h('div', { class: 'bad-text small' }, x)));
+
+	return h('section', { class: `psp${p.active ? '' : ' off'}` },
+		h('header', { class: 'psp-head' }, mark,
+			h('div', { class: 'grow min0' }, h('h2', { class: 'm0 psp-name' }, p.name, ' ', h('span', { class: `mode ${ENV[p.environment] || 's-idle'}` }, p.environment)),
+				h('div', { class: 'muted small' }, p.role, p.endpoint ? [' · ', h('span', { class: 'mono' }, p.endpoint)] : null)),
+			badge(p.active ? 'active' : 'idle')),
+		p.notes.length ? h('div', { class: 'psp-notes' }, p.notes.map((n) => h('span', { class: 'tag' }, n))) : null,
+		h('div', { class: 'kpis' }, kpi('Collected', fmtAmount(inn.amount), plural(inn.n, 'payment')), kpi('Paid out', fmtAmount(out.amount), plural(out.n, 'payment')),
+			kpi('In progress', String(open.n), 'waiting'), kpi('Failed / unknown', String(bad.n), 'last 24 h', bad.n > 0)),
+		h('div', { class: 'psp-body' },
+			h('div', { class: 'panel' }, h('h3', {}, 'Channels'), channels),
+			h('div', { class: 'panel' }, h('h3', {}, p.id === 'pispi' ? 'Accounts' : 'Payout accounts'),
+				p.accounts.length ? h('div', { class: 'accts' }, p.accounts.map(account)) : null,
+				p.accountsNote ? h('p', { class: 'muted small m0' }, p.accountsNote) : null)));
 }
 
 // ---- payments -------------------------------------------------------------------------------------------------------------------

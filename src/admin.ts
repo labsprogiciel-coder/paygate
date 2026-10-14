@@ -96,15 +96,37 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 	}
 	if (path === '/admin/float' && m === 'GET') return json(await loadFloat(env, providers));
 	if (path === '/admin/providers' && m === 'GET') {
+		// every PSP with its channels (what each operator can do on the account now) and the accounts money is paid from; plus the last 24 hours
 		const since = Date.now() - 86_400_000;
-		const { results } = await env.DB.prepare(`SELECT provider, rail, kind, status, COUNT(*) AS n, SUM(amount) AS amount FROM payments WHERE created_at >= ? GROUP BY provider, rail, kind, status`).bind(since).all();
+		const [{ results }, channels, float] = await Promise.all([
+			env.DB.prepare(`SELECT provider, rail, kind, status, COUNT(*) AS n, SUM(amount) AS amount FROM payments WHERE created_at >= ? GROUP BY provider, rail, kind, status`).bind(since).all(),
+			providers.channels().then((data) => ({ data, error: null }), (e: unknown) => ({ data: null, error: e instanceof Error ? e.message : String(e) })),
+			loadFloat(env, providers).then((f) => ({ f, error: null }), (e: unknown) => ({ f: null, error: e instanceof Error ? e.message : String(e) })),
+		]);
 		const sandbox = providers.mode === 'sandbox';
+		const iso3 = ({ BF: 'BFA', CI: 'CIV', SN: 'SEN' } as Record<string, string>)[env.PISPI_COUNTRY || 'BF'] ?? (env.PISPI_COUNTRY || 'BF');
+		const alias = pispiAlias(env), pispiOn = pispiEnabled(env);
+		const rail = (open: boolean) => ({ status: open ? 'OPERATIONAL' : 'CLOSED', min: null, max: null });
 		const list = [
-			{ id: sandbox ? 'sandbox' : 'pawapay', name: sandbox ? 'Sandbox (simulated)' : 'pawaPay', role: 'Mobile money (MNO aggregator)', rails: ['mobile_money'], channels: ['orange', 'wave', 'moov'], countries: ['CIV', 'SEN', 'BFA'], active: true, notes: [sandbox ? 'No money moves' : env.PAWAPAY_BASE_URL, on(env.LIVE) ? 'LIVE' : 'not live'] },
-			{ id: 'pispi', name: 'PI-SPI (BCEAO)', role: 'Instant bank payments', rails: ['pispi_qr', 'pispi_rtp'], channels: ['bank'], countries: [({ BF: 'BFA', CI: 'CIV', SN: 'SEN' } as Record<string, string>)[env.PISPI_COUNTRY || 'BF'] ?? (env.PISPI_COUNTRY || 'BF')], active: pispiEnabled(env),
-				notes: pispiEnabled(env) ? [`QR ${pispiPollEnabled(env) ? 'auto-confirmed (polling)' : 'confirmed by an operator'}`, `payment requests ${pispiRtpEnabled(env) ? 'on' : 'off'}`] : [pispiAlias(env) === null && on(env.PISPI_ENABLED) ? 'PI_SPI_ACCOUNT_ALIAS is not set' : 'disabled'] },
+			{ id: sandbox ? 'sandbox' : 'pawapay', name: sandbox ? 'Sandbox (simulated)' : 'pawaPay', role: 'Mobile money (MNO aggregator)', rails: ['mobile_money'], active: true,
+				environment: sandbox ? 'Simulated' : on(env.LIVE) ? 'Live' : 'Sandbox', endpoint: sandbox ? null : env.PAWAPAY_BASE_URL,
+				notes: [sandbox ? 'No money moves' : env.PAWAPAY_BASE_URL, on(env.LIVE) ? 'LIVE' : 'not live'],
+				channels: channels.data, channelsError: channels.error,
+				// one payout wallet per country: a payout is paid from the wallet of the recipient's country
+				accounts: (float.f?.rows ?? []).map((r) => ({ kind: 'wallet', label: `${r.country} payout wallet`, country: r.country, currency: r.currency, balance: r.balance, status: r.status, reasons: r.reasons,
+					committed: r.committed, committedCount: r.committedCount, coverDays: r.coverDays, out24h: r.out24h, in24h: r.in24h })),
+				accountsNote: sandbox ? 'The sandbox has no wallets: nothing is paid out.' : float.error ? `Wallet balances could not be read: ${float.error}` : null },
+			{ id: 'pispi', name: 'PI-SPI (BCEAO)', role: 'Instant bank payments', rails: ['pispi_qr', 'pispi_rtp'], active: pispiOn,
+				environment: /simulateur|sandbox/i.test(env.PI_SPI_BUSINESS_API_URL || '') ? 'Simulator' : pispiOn ? 'Live' : 'Off', endpoint: env.PI_SPI_BUSINESS_API_URL || null,
+				notes: pispiOn ? [`QR ${pispiPollEnabled(env) ? 'auto-confirmed (polling)' : 'confirmed by an operator'}`, `payment requests ${pispiRtpEnabled(env) ? 'on' : 'off'}`] : [alias === null && on(env.PISPI_ENABLED) ? 'PI_SPI_ACCOUNT_ALIAS is not set' : 'disabled'],
+				channels: [
+					{ country: iso3, operator: 'bank', code: 'PISPI_QR', collect: rail(pispiOn), payout: null },
+					{ country: iso3, operator: 'bank', code: 'PISPI_RTP', collect: rail(pispiRtpEnabled(env)), payout: null },
+				], channelsError: null,
+				accounts: alias ? [{ kind: 'alias', label: 'Receiving alias', country: iso3, currency: 'XOF', value: alias.length > 14 ? `${alias.slice(0, 8)}…${alias.slice(-4)}` : alias, participant: env.PI_SPI_PARTICIPANT || null }] : [],
+				accountsNote: alias ? 'Customers pay into this alias; PI-SPI reports no balance and pays out nothing here.' : 'No receiving alias: set PI_SPI_ACCOUNT_ALIAS.' },
 		];
-		return json({ data: list, last24h: results });
+		return json({ data: list, last24h: results, floor: Number(env.FLOAT_FLOOR_XOF) });
 	}
 	if (path === '/admin/events' && m === 'GET') {
 		const sources = (url.searchParams.get('source') ?? '').split(',').filter((s): s is Source => (SOURCES as readonly string[]).includes(s));

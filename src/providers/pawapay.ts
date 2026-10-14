@@ -1,7 +1,7 @@
 import { verifyCallback, type KeyFetcher } from './httpSig.ts';
-import { parsePhone, providerCode } from './phone.ts';
+import { CHANNELS, COUNTRIES, parsePhone, providerCode } from './phone.ts';
 import { on, safeUrl } from '../util.ts';
-import type { CallbackEvent, CollectInit, CollectProvider, CollectRequest, CollectStatus, DisburseOutcome, DisburseProvider, DisburseRequest, DisburseStatus, Method, WalletBalance } from './types.ts';
+import type { CallbackEvent, Channel, ChannelOp, CollectInit, CollectProvider, CollectRequest, CollectStatus, DisburseOutcome, DisburseProvider, DisburseRequest, DisburseStatus, Method, WalletBalance } from './types.ts';
 
 /**
  * pawaPay (https://docs.pawapay.io/v2): collects FCFA (XOF) from a customer's mobile money (deposits) and pays it out (payouts).
@@ -140,7 +140,7 @@ type Cache = { get(k: string): Promise<string | null>; put(k: string, v: string,
 export interface PawapayDeps { fetch?: typeof fetch; cache?: Cache }
 type PawapayEnv = Pick<Env, 'LIVE' | 'PAWAPAY_BASE_URL' | 'PAWAPAY_API_TOKEN'>;
 
-export function createPawapay(env: PawapayEnv, deps: PawapayDeps = {}): { collect: CollectProvider; disburse: DisburseProvider; parseCallback(body: string, headers: Headers, url: URL): Promise<CallbackEvent | null> } {
+export function createPawapay(env: PawapayEnv, deps: PawapayDeps = {}): { channels(): Promise<Channel[]>; collect: CollectProvider; disburse: DisburseProvider; parseCallback(body: string, headers: Headers, url: URL): Promise<CallbackEvent | null> } {
 	const live = on(env.LIVE);
 	const base = normalizeBase(env.PAWAPAY_BASE_URL || SANDBOX_URL);
 	assertSafeBase(base, live);
@@ -300,5 +300,15 @@ export function createPawapay(env: PawapayEnv, deps: PawapayDeps = {}): { collec
 		} catch { return null; }
 	}
 
-	return { collect, disburse, parseCallback };
+	/** Every supported channel, as this account's configuration has it (both operation types, every country; cached like the rest). */
+	async function channels(): Promise<Channel[]> {
+		const op = (c: { status: string; min: number; max: number } | undefined): ChannelOp | null => c ? { status: c.status, min: Number.isFinite(c.min) && c.min > 0 ? c.min : null, max: Number.isFinite(c.max) && c.max > 0 ? c.max : null } : null;
+		return (await Promise.all(COUNTRIES.map(async (country) => {
+			const [dep, pay] = await Promise.all([conf(country, 'DEPOSIT', parseDepositConf), conf(country, 'PAYOUT', parsePayoutConf)]);
+			if (!dep || !pay) throw new Error(`pawaPay did not return its configuration for ${country}`);
+			return CHANNELS.filter((c) => c.country === country).map((c) => ({ ...c, collect: op(dep.get(c.code)), payout: op(pay.get(c.code)) }));
+		}))).flat();
+	}
+
+	return { channels, collect, disburse, parseCallback };
 }
