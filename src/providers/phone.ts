@@ -7,6 +7,8 @@ const PROVIDERS: Record<string, Record<string, string>> = {
 };
 export const OPERATORS = new Set(['orange', 'wave', 'moov']);
 export const COUNTRIES = ['CIV', 'SEN', 'BFA'];
+/** Every mobile money channel the gateway supports: one operator in one country, with its provider code. */
+export const CHANNELS: { country: string; operator: string; code: string }[] = Object.entries(PROVIDERS).flatMap(([country, ops]) => Object.entries(ops).map(([operator, code]) => ({ country, operator, code })));
 
 /** "+2250789458900" -> { msisdn: "2250789458900", country: "CIV" }, or null for an unsupported country. */
 export function parsePhone(e164: string): { msisdn: string; country: string } | null {

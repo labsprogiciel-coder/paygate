@@ -100,8 +100,15 @@ export interface CallbackEvent {
 	error?: string;
 }
 
+/** What one channel can do on the account right now. `min`/`max` are XOF; null = no limit given. */
+export interface ChannelOp { status: string; min: number | null; max: number | null }
+/** A way money moves through a provider: an operator in a country (or a PI-SPI rail), and whether it takes collections and payouts. null = not on the account. */
+export interface Channel { country: string; operator: string; code: string; collect: ChannelOp | null; payout: ChannelOp | null }
+
 export interface Providers {
 	mode: string;
+	/** Every supported channel and what the provider's account currently allows on it. Throws when the provider's configuration cannot be read. */
+	channels(): Promise<Channel[]>;
 	collect: CollectProvider;
 	disburse: DisburseProvider;
 	/** Verifies and parses a pawaPay callback; null = reject (bad signature / unreadable). `url` is the URL the provider called (the signature covers host and path). */

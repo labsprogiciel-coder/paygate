@@ -1,4 +1,8 @@
-import type { CollectProvider, DisburseProvider } from './types.ts';
+import { CHANNELS } from './phone.ts';
+import type { Channel, CollectProvider, DisburseProvider } from './types.ts';
+
+/** The sandbox opens every supported channel both ways, with its 100 to 1 000 000 XOF limits. */
+export const sandboxChannels = async (): Promise<Channel[]> => CHANNELS.map((c) => ({ ...c, collect: { status: 'OPERATIONAL', min: 100, max: 1_000_000 }, payout: { status: 'OPERATIONAL', min: 100, max: 1_000_000 } }));
 
 /**
  * The sandbox: no money moves, nothing is sent to anyone. For development and demos only (refused with LIVE=true, see providers/index.ts).
