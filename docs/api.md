@@ -125,7 +125,7 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `POST /admin/tenants/{id}/keys` | `{ label? }` → `{ id, key }`, shown once |
 | `DELETE /admin/tenants/{id}/keys/{keyId}` | revoke |
 | `GET /admin/tenants/{id}/webhook-secret` | the secret your product verifies with; `POST` rotates it |
-| `GET /admin/payments?status=&tenant=&kind=` | with the detail tenants never see |
+| `GET /admin/payments?status=&tenant=&kind=&limit=&before=` | with the detail tenants never see; newest first, `limit` 1–100 (default 50). Returns `{ data, total, next }`: pass `next` as `before` for the next page |
 | `GET /admin/payments/{id}` | with its full history |
 | `POST /admin/payments/{id}/resolve` | `{ outcome: "completed" \| "failed", note }` for an `unknown` payout or a manually confirmed PI-SPI payment |
 | `GET /admin/webhooks/dead`, `POST /admin/webhooks/{id}/retry` | undeliverable events |

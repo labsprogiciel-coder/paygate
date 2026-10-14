@@ -157,3 +157,21 @@ label.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; fo
 label.check.mt14 { margin-top: 14px; }
 .adv { margin-top: 12px; } .adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .copyrow { display: flex; gap: 8px; align-items: center; } .copyrow .secret { flex: 1; min-width: 0; }
+
+/* skeletons: shaped like what is loading; a slow shimmer, still for people who ask for less motion */
+.sk { display: block; height: 10px; border-radius: 5px; background: var(--idle-bg); position: relative; overflow: hidden; }
+.sk::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--panel) 70%, transparent), transparent); animation: sk 1.4s ease-in-out infinite; }
+@keyframes sk { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .sk::after { animation: none; display: none; } }
+.w30 { width: 30%; } .w35 { width: 35%; } .w40 { width: 40%; } .w45 { width: 45%; } .w55 { width: 55%; } .w60 { width: 60%; } .w65 { width: 65%; } .w75 { width: 75%; }
+td .sk { min-width: 36px; } .sk-row td { padding-top: 14px; padding-bottom: 14px; }
+.sk-l { height: 12px; margin: 3px 0 7px; } .sk-s { height: 9px; } .sk-big { height: 22px; width: 55%; margin: 10px 0 8px; } .sk-h1 { height: 20px; width: 180px; margin: 4px 0 14px; }
+.sk-sq { width: 26px; height: 26px; border-radius: 8px; } .sk-pill { width: 64px; height: 18px; border-radius: 99px; } .w-amt { width: 90px; height: 12px; }
+.w-time { width: 54px; margin-top: 4px; } .w-src { width: 70%; margin-top: 4px; } .w-day { width: 90px; height: 9px; }
+.feed.compact .w-src { width: 12px; }
+.tile .sk-s { width: 40%; } .tile .sk-s:last-child { width: 60%; }
+.kv dt .sk, .kv dd .sk { margin: 4px 0; }
+.card > .sk { margin: 6px 0 10px; }
+/* pager */
+.pager { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pager .grow { flex: 1; } .pager select { padding: 4px 8px; font-size: 13px; }

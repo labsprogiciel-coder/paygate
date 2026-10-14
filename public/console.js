@@ -124,6 +124,59 @@ function notOperator(userId) {
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => copy(userId) }, 'Copy id'), h('button', { class: 'btn primary', onclick: () => signOut() }, 'Sign out'))));
 }
 
+// ---- skeletons and paging ----------------------------------------------------------------------------------------------------------
+// Placeholders shaped like what is loading, so the page does not jump when it arrives. Widths are classes: the CSP allows no inline styles.
+const W = ['w30', 'w60', 'w45', 'w75', 'w40', 'w55', 'w35', 'w65'];
+const bar = (i = 0, cls = '') => h('span', { class: `sk ${W[i % W.length]} ${cls}` });
+const busy = (...kids) => h('div', { 'aria-busy': 'true', 'aria-label': 'Loading' }, h('div', { 'aria-hidden': 'true' }, kids));
+const skTable = (cols, n = 8) => busy(h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))),
+	h('tbody', {}, Array.from({ length: n }, (_, r) => h('tr', { class: 'sk-row' }, cols.map((_, c) => h('td', {}, bar(r + c)))))))));
+const skList = (n = 8) => busy(h('div', { class: 'list' }, Array.from({ length: n }, (_, i) => h('div', { class: 'li' }, h('span', { class: 'sk sk-sq' }),
+	h('div', { class: 'min0' }, bar(i, 'sk-l'), bar(i + 3, 'sk-s')), h('span', { class: 'sk w-amt' }), h('span', { class: 'sk sk-pill' })))));
+const skFeed = (n = 8, compact = false) => busy(h('ul', { class: `feed${compact ? ' compact' : ''}` }, compact ? null : h('li', { class: 'day' }, h('span', { class: 'sk w-day' })),
+	Array.from({ length: n }, (_, i) => h('li', { class: 'ev' }, h('span', { class: 'sk w-time' }), h('span', { class: 'sk w-src' }),
+		h('div', { class: 'ev-main' }, bar(i + 1, 'sk-l'), bar(i + 4, 'sk-s')), h('span', { class: 'sk sk-pill' })))));
+const skTiles = () => busy(h('div', { class: 'tiles' }, [0, 1, 2, 3].map((i) => h('div', { class: 'tile' }, bar(i, 'sk-s'), h('span', { class: 'sk sk-big' }), bar(i + 2, 'sk-s')))));
+const skHead = () => busy(h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))));
+const skDrawer = () => busy(h('div', { class: 'bar' }, h('span', { class: 'sk sk-h1' })), h('div', { class: 'card' }, h('dl', { class: 'kv' },
+	Array.from({ length: 8 }, (_, i) => [h('dt', {}, bar(i, 'sk-s')), h('dd', {}, bar(i + 3))]))), h('div', { class: 'card' }, bar(1), bar(4), bar(2)));
+const SKELETON = {
+	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
+	payments: () => [skHead(), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
+	events: () => [skHead(), skFeed(10)],
+	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
+};
+
+const SIZES = [25, 50, 100];
+const pref = { get: () => { try { return Number(localStorage.getItem('pg_page_size')) || 50 } catch { return 50 } }, set: (n) => { try { localStorage.setItem('pg_page_size', String(n)) } catch {} } };
+/**
+ * Cursor paging, newest first. `fetch(cursor, size)` answers { data, next, total? }; Older follows `next`, Newer goes back up the cursors already seen.
+ * The page keeps its height while the next one loads (a skeleton of the same number of rows), and scrolls back to the top of the list.
+ */
+function pager({ fetch, render, skeleton, noun = 'rows' }) {
+	const body = h('div'), nav = h('div', { class: 'pager' });
+	let stack = [null], size = SIZES.includes(pref.get()) ? pref.get() : 50, last = null, loading = false, seq = 0;
+	const sizeSel = h('select', { 'aria-label': `${noun} per page` }, SIZES.map((n) => h('option', { value: n, selected: n === size ? true : null }, `${n} per page`)));
+	sizeSel.addEventListener('change', () => { size = Number(sizeSel.value); pref.set(size); reset() });
+	const draw = () => {
+		const n = last?.data.length ?? 0, from = (stack.length - 1) * size + 1;
+		const info = loading ? 'Loading…' : !n ? '' : last.total != null ? `${from}–${from + n - 1} of ${last.total} ${noun}` : `Page ${stack.length}`;
+		put(nav, h('span', { class: 'muted small grow', 'aria-live': 'polite' }, info), sizeSel,
+			h('button', { class: 'btn sm', disabled: loading || stack.length === 1 ? true : null, onclick: () => { stack.pop(); load(true) } }, '← Newer'),
+			h('button', { class: 'btn sm', disabled: loading || !last?.next ? true : null, onclick: () => { stack.push(last.next); load(true) } }, 'Older →'));
+	};
+	const load = async (scroll = false) => {
+		const mine = ++seq; loading = true; draw();
+		put(body, skeleton(Math.max(3, Math.min(last?.data.length || 8, size))));
+		if (scroll) body.scrollIntoView({ block: 'start', behavior: 'smooth' });
+		try { const r = await fetch(stack.at(-1), size); if (mine !== seq) return; last = r; put(body, render(r.data)) }
+		catch (e) { if (mine !== seq) return; if (e instanceof AuthError) return signOut('Session ended. Sign in again.'); if (e instanceof NotOperator) return notOperator(e.userId); last = null; put(body, h('div', { class: 'alert bad' }, e.message, ' ', h('button', { class: 'btn sm', onclick: () => load() }, 'Retry'))) }
+		loading = false; draw();
+	};
+	const reset = () => { stack = [null]; last = null; return load() };
+	return { el: h('div', {}, body, nav), reset, refresh: () => load() };
+}
+
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
 const PAGES = { overview: ['Overview', overview], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
 let attention = { unknown: 0, problems: 0 };
@@ -143,7 +196,7 @@ async function route() {
 	document.querySelectorAll('.overlay').forEach((o) => o.remove());
 	const name = (location.hash.slice(2) || 'overview').split('?')[0];
 	const page = PAGES[name] ? name : 'overview';
-	const main = h('main', { class: 'main' }, h('p', { class: 'muted' }, 'Loading…'));
+	const main = h('main', { class: 'main' }, SKELETON[page]());
 	const nav = h('nav', { class: 'nav' }, Object.entries(PAGES).map(([id, [label]]) => {
 		const n = id === 'payments' ? attention.unknown : id === 'events' ? attention.problems : 0;
 		return h('a', { href: `#/${id}`, 'aria-current': id === page ? 'page' : null }, label, n ? h('span', { class: 'count' }, n) : null);
@@ -178,8 +231,8 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const tile = (label, value, sub, cls) => h('div', { class: `tile${cls ? ' ' + cls : ''}` }, h('div', { class: 'tl' }, label), h('div', { class: 'tv' }, value), sub ? h('div', { class: 'ts' }, sub) : null);
 
 async function overview(main) {
-	const [flt, prov, att, unknown, recent, feed] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/attention'),
-		api('GET', '/admin/payments?status=unknown'), api('GET', '/admin/payments'), api('GET', '/admin/events?limit=12')]);
+	const [flt, prov, att, recent, feed] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/attention'),
+		api('GET', '/admin/payments?limit=8'), api('GET', '/admin/events?limit=12')]);
 
 	// what needs a person, most serious first
 	const todo = [];
@@ -202,7 +255,7 @@ async function overview(main) {
 		tile('Collected', `${compact(inn.amount)} FCFA`, plural(inn.n, 'payment')),
 		tile('Paid out', `${compact(out.amount)} FCFA`, plural(out.n, 'payment')),
 		tile('Success rate', rate === null ? '–' : `${rate}%`, done.n ? `${inn.n + out.n} of ${done.n} settled` : 'nothing settled yet'),
-		tile('In progress', String(open.n), unknown.data.length ? `${unknown.data.length} unknown, needs a person` : 'waiting on customers or providers', unknown.data.length ? 'bad' : null));
+		tile('In progress', String(open.n), att.unknown ? `${att.unknown} unknown, needs a person` : 'waiting on customers or providers', att.unknown ? 'bad' : null));
 
 	const sandbox = prov.data.some((p) => p.id === 'sandbox');
 	const live = prov.data.some((p) => p.notes.includes('LIVE'));
@@ -211,7 +264,7 @@ async function overview(main) {
 		attentionBlock,
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
 		h('div', { class: 'cols' },
-			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data.slice(0, 8))),
+			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))),
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Providers'), h('span', { class: 'muted small' }, 'Float floor ', fmtAmount(flt.floor))), providerCards(prov, flt));
 }
@@ -266,21 +319,21 @@ async function payments(main) {
 	const kind = sel('kind', [['', 'In and out'], ['collection', 'Collections (in)'], ['disbursement', 'Disbursements (out)']]);
 	const tenant = h('input', { placeholder: 'Tenant id', value: q.get('tenant') || '', 'aria-label': 'tenant', size: 14 });
 	const find = h('input', { placeholder: 'Find a payment id…', 'aria-label': 'Open payment by id', size: 24 });
-	const apply = () => { const p = new URLSearchParams(); if (status.value) p.set('status', status.value); if (kind.value) p.set('kind', kind.value); if (tenant.value.trim()) p.set('tenant', tenant.value.trim()); history.replaceState(null, '', `#/payments${p.size ? '?' + p : ''}`); load(); };
+	const apply = () => { const p = filters(); history.replaceState(null, '', `#/payments${p.size ? '?' + p : ''}`); load(); };
 	for (const el of [status, kind]) el.addEventListener('change', apply);
 	tenant.addEventListener('change', apply);
 	find.addEventListener('keydown', (e) => { if (e.key === 'Enter' && find.value.trim()) paymentDrawer(find.value.trim()) });
-	const out = h('div');
-	const load = async () => {
-		const p = new URLSearchParams(); if (status.value) p.set('status', status.value); if (kind.value) p.set('kind', kind.value); if (tenant.value.trim()) p.set('tenant', tenant.value.trim());
-		put(out, h('p', { class: 'muted' }, 'Loading…'));
-		try { const r = await api('GET', `/admin/payments${p.size ? '?' + p : ''}`); put(out, paymentsTable(r.data), r.data.length === 100 ? h('p', { class: 'muted' }, 'Showing the latest 100.') : null) } catch (e) { put(out, h('div', { class: 'alert bad' }, e.message)) }
-	};
-	put(main, head('Payments', null, h('button', { class: 'btn', onclick: load }, 'Refresh')), h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), out);
-	load();
+	const filters = () => { const p = new URLSearchParams(); if (status.value) p.set('status', status.value); if (kind.value) p.set('kind', kind.value); if (tenant.value.trim()) p.set('tenant', tenant.value.trim()); return p };
+	const list = pager({ noun: 'payments',
+		fetch: (before, size) => { const p = filters(); p.set('limit', size); if (before) p.set('before', before); return api('GET', `/admin/payments?${p}`) },
+		render: (rows) => paymentsTable(rows),
+		skeleton: (n) => skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], n) });
+	const load = list.reset;
+	put(main, head('Payments', null, h('button', { class: 'btn', onclick: list.refresh }, 'Refresh')), h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), list.el);
+	await load();
 }
 async function paymentDrawer(id) {
-	const d = overlay(h('p', { class: 'muted' }, 'Loading…'));
+	const d = overlay(skDrawer());
 	const render = (p) => {
 		const resolvable = p.status === 'processing' || p.status === 'unknown' ? ['completed', 'failed'] : p.status === 'failed' || p.status === 'expired' ? ['completed'] : [];
 		const row = (k, v) => v == null || v === '' ? null : [h('dt', {}, k), h('dd', {}, v)];
@@ -380,7 +433,7 @@ async function connectModal(id) {
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { m.close(); tenantDrawer(id) } }, 'Open tenant'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 async function tenantDrawer(id) {
-	const d = overlay(h('p', { class: 'muted' }, 'Loading…'));
+	const d = overlay(skDrawer());
 	const render = async () => {
 		const [t, keys] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`)]);
 		put(d.box, 
@@ -468,23 +521,17 @@ async function events(main) {
 	drawSeg();
 
 	const params = () => { const p = new URLSearchParams(); if (source) p.set('source', source); if (problems.checked) p.set('problems', '1'); if (tenant.value.trim()) p.set('tenant', tenant.value.trim()); if (payment.value.trim()) p.set('payment', payment.value.trim()); return p };
-	const out = h('div'), more = h('div', { class: 'more' });
-	let items = [], next = null;
-	const draw = () => {
-		const note = source === 'callback' && (tenant.value.trim() || payment.value.trim()) ? h('p', { class: 'muted small' }, 'Provider callbacks belong to no tenant or payment, so those filters hide them.') : null;
-		put(out, note, feedList(items, { onChange: load }));
-		put(more, next ? h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; await page(); } }, 'Load older') : items.length ? h('p', { class: 'muted small' }, 'That is everything.') : null);
-	};
-	const page = async () => {
-		const p = params(); p.set('limit', '50'); if (next) p.set('before', String(next));
-		try { const r = await api('GET', `/admin/events?${p}`); items = items.concat(r.data); next = r.next; draw() } catch (e) { put(more, h('div', { class: 'alert bad' }, e.message)) }
-	};
-	const load = async () => { items = []; next = null; put(out, h('p', { class: 'muted' }, 'Loading…')); put(more); await page(); };
+	const list = pager({ noun: 'events',
+		fetch: (before, size) => { const p = params(); p.set('limit', size); if (before) p.set('before', before); return api('GET', `/admin/events?${p}`) },
+		render: (items) => [source === 'callback' && (tenant.value.trim() || payment.value.trim()) ? h('p', { class: 'muted small' }, 'Provider callbacks belong to no tenant or payment, so those filters hide them.') : null,
+			feedList(items, { onChange: () => list.refresh() })],
+		skeleton: (n) => skFeed(n) });
+	const load = list.reset;
 	const apply = () => { const p = params(); history.replaceState(null, '', `#/events${p.size ? '?' + p : ''}`); load(); };
 	problems.addEventListener('change', apply); tenant.addEventListener('change', apply); payment.addEventListener('change', apply);
 
-	put(main, head('Events', 'Everything that happened, newest first: payment status changes, provider callbacks in, and webhooks out to products.', h('button', { class: 'btn', onclick: load }, 'Refresh')),
-		h('div', { class: 'bar' }, seg, h('label', { class: 'check' }, problems, 'Needs attention'), h('span', { class: 'grow' }), tenant, payment), out, more);
+	put(main, head('Events', 'Everything that happened, newest first: payment status changes, provider callbacks in, and webhooks out to products.', h('button', { class: 'btn', onclick: () => list.refresh() }, 'Refresh')),
+		h('div', { class: 'bar' }, seg, h('label', { class: 'check' }, problems, 'Needs attention'), h('span', { class: 'grow' }), tenant, payment), list.el);
 	await load();
 }
 

@@ -62,10 +62,19 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		if (m === 'POST') return json(await rotateWebhookSecret(env, t.id)); // rotate
 	}
 	if (path === '/admin/payments' && m === 'GET') {
+		// newest first, a page at a time: `before` is the last row's `<createdAt>:<id>` (the response's `next`), so rows sharing a timestamp are never skipped
 		const where: string[] = [], binds: unknown[] = [];
 		for (const [param, col] of [['status', 'status'], ['tenant', 'tenant_id'], ['kind', 'kind']] as const) { const v = url.searchParams.get(param); if (v) { where.push(`${col} = ?`); binds.push(v); } }
-		const { results } = await env.DB.prepare(`SELECT * FROM payments ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT 100`).bind(...binds).all<PaymentRow>();
-		return json({ data: results.map((r) => adminView(env, r)) });
+		const filter = where.length ? 'WHERE ' + where.join(' AND ') : '', filterBinds = [...binds];
+		const limit = Math.min(Math.max(Math.floor(Number(url.searchParams.get('limit')) || 50), 1), 100);
+		const c = /^(\d{1,16}):(pg[0-9a-f]{18})$/.exec(url.searchParams.get('before') ?? '');
+		if (c) { where.push('(created_at < ? OR (created_at = ? AND id < ?))'); binds.push(Number(c[1]), Number(c[1]), c[2]); }
+		const [{ results }, total] = await Promise.all([
+			env.DB.prepare(`SELECT * FROM payments ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).bind(...binds, limit + 1).all<PaymentRow>(),
+			env.DB.prepare(`SELECT COUNT(*) AS n FROM payments ${filter}`).bind(...filterBinds).first<number>('n'),
+		]);
+		const page = results.slice(0, limit), last = page.at(-1);
+		return json({ data: page.map((r) => adminView(env, r)), total: total ?? 0, next: results.length > limit && last ? `${last.created_at}:${last.id}` : null });
 	}
 	if ((g = /^\/admin\/payments\/(pg[0-9a-f]{18})$/.exec(path)) && m === 'GET') {
 		const r = await getRow(env, g[1]!);
