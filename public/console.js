@@ -141,7 +141,7 @@ const skHead = () => busy(h('div', { class: 'bar' }, h('div', { class: 'grow' },
 const skDrawer = () => busy(h('div', { class: 'bar' }, h('span', { class: 'sk sk-h1' })), h('div', { class: 'card' }, h('dl', { class: 'kv' },
 	Array.from({ length: 8 }, (_, i) => [h('dt', {}, bar(i, 'sk-s')), h('dd', {}, bar(i + 3))]))), h('div', { class: 'card' }, bar(1), bar(4), bar(2)));
 const SKELETON = {
-	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
+	overview: () => [skHead(), skTiles(), busy(h('div', { class: 'pgrid mt22' }, [0, 1].map((i) => h('div', { class: 'card pcard' }, h('span', { class: 'sk sk-h1' }), bar(i), bar(i + 3), bar(i + 5))))), h('div', { class: 'cols' }, skList(6), skFeed(6, true))],
 	payments: () => [skHead(), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
 	events: () => [skHead(), skFeed(10)],
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
@@ -263,10 +263,10 @@ async function overview(main) {
 		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), h('button', { class: 'btn', onclick: route }, 'Refresh')),
 		attentionBlock,
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
+		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Providers'), h('span', { class: 'muted small' }, 'Float floor ', fmtAmount(flt.floor))), providerCards(prov, flt),
 		h('div', { class: 'cols' },
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
-			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))),
-		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Providers'), h('span', { class: 'muted small' }, 'Float floor ', fmtAmount(flt.floor))), providerCards(prov, flt));
+			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))));
 }
 
 /** A short list for the overview; the full table is on the payments page. */
