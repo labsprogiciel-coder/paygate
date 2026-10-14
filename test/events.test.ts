@@ -34,6 +34,8 @@ test('the feed merges payment events, callbacks and webhooks, newest first', asy
 	assert.equal(rejected.problem, true);
 	assert.equal(rejected.body, '{"bad":true}');
 	assert.equal(r.body.next, null);
+	const pay = r.body.data.find((e: any) => e.source === 'payment');
+	assert.deepEqual([pay.rail, pay.operator], ['mobile_money', 'orange'], 'payment events carry what the console needs for the provider avatar');
 });
 
 test('filters: source, needs attention, tenant and payment', async () => {
