@@ -150,7 +150,8 @@ const skHead = () => busy(h('div', { class: 'bar' }, h('div', { class: 'grow' },
 const skDrawer = () => busy(h('div', { class: 'bar' }, h('span', { class: 'sk sk-h1' })), h('div', { class: 'card' }, h('dl', { class: 'kv' },
 	Array.from({ length: 8 }, (_, i) => [h('dt', {}, bar(i, 'sk-s')), h('dd', {}, bar(i + 3))]))), h('div', { class: 'card' }, bar(1), bar(4), bar(2)));
 const SKELETON = {
-	overview: () => [skHead(), skTiles(), busy(h('div', { class: 'pgrid mt22' }, [0, 1].map((i) => h('div', { class: 'card pcard' }, h('span', { class: 'sk sk-h1' }), bar(i), bar(i + 3), bar(i + 5))))), h('div', { class: 'cols' }, skList(6), skFeed(6, true))],
+	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
+	dashboard: () => [skHead(), busy(h('div', { class: 'pgrid' }, [0, 1].map((i) => h('div', { class: 'card pcard' }, h('span', { class: 'sk sk-h1' }), bar(i), bar(i + 3), bar(i + 5), h('span', { class: 'sk sk-big' })))))],
 	payments: () => [skHead(), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
 	events: () => [skHead(), skFeed(10)],
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
@@ -187,7 +188,7 @@ function pager({ fetch, render, skeleton, noun = 'rows' }) {
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
-const PAGES = { overview: ['Overview', overview], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
+const PAGES = { overview: ['Overview', overview], dashboard: ['Dashboard', dashboard], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
 let attention = { unknown: 0, problems: 0 };
 
 let started = false;
@@ -248,7 +249,7 @@ async function overview(main) {
 	if (att.unknown) todo.push(['bad', plural(att.unknown, 'payout'), 'with an unknown outcome', 'Money may have been sent. A person must decide.', '#/payments?status=unknown', 'Resolve']);
 	if (att.deadWebhooks) todo.push(['warn', plural(att.deadWebhooks, 'webhook'), 'not delivered', 'A product was not told about a payment.', '#/events?source=webhook&problems=1', 'Retry']);
 	if (att.rejectedCallbacks24h) todo.push(['warn', plural(att.rejectedCallbacks24h, 'callback'), 'rejected (24 h)', 'Failed the signature or shape check.', '#/events?source=callback&problems=1', 'Inspect']);
-	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, null, null]);
+	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, '#/dashboard', 'View']);
 	const attentionBlock = todo.length
 		? h('div', { class: 'todo' }, todo.map(([level, what, state, why, href, action]) => h('div', { class: `todo-item ${level}` },
 			h('div', { class: 'grow' }, h('strong', {}, what), ` ${state}`, h('div', { class: 'todo-why' }, why)), href ? h('a', { class: 'btn sm', href }, action) : null)))
@@ -272,7 +273,6 @@ async function overview(main) {
 		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), h('button', { class: 'btn', onclick: route }, 'Refresh')),
 		attentionBlock,
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
-		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Providers'), h('span', { class: 'muted small' }, 'Float floor ', fmtAmount(flt.floor))), providerCards(prov, flt),
 		h('div', { class: 'cols' },
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))));
@@ -297,11 +297,21 @@ function floatBlock(flt) {
 			r.committed ? h('span', { class: 'muted wnote' }, `${fmtAmount(r.committed)} committed (${r.committedCount})`) : null,
 			...r.reasons.map((x) => h('span', { class: 'bad-text wnote' }, x)))));
 }
+// ---- dashboard ------------------------------------------------------------------------------------------------------------------
+async function dashboard(main) {
+	const [flt, prov] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers')]);
+	put(main, head('Dashboard', `Payment providers, how they are set up, and the payout float (floor ${fmtAmount(flt.floor)}). Figures are for the last 24 hours.`, h('button', { class: 'btn', onclick: route }, 'Refresh')),
+		providerCards(prov, flt));
+}
+
 function providerCards(prov, flt) {
 	return h('div', { class: 'pgrid' }, prov.data.map((p) => {
 		const mine = prov.last24h.filter((r) => r.provider === p.id);
 		const count = (f) => mine.filter(f).reduce((n, r) => n + r.n, 0);
-		const ok = count((r) => r.status === 'completed'), bad = count((r) => r.status === 'failed' || r.status === 'unknown'), open = count((r) => r.status === 'processing');
+		const bad = count((r) => r.status === 'failed' || r.status === 'unknown'), open = count((r) => r.status === 'processing');
+		const sum = (f) => mine.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
+		const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
+		const stat = (label, big, small, warn) => h('div', { class: 'pstat' }, h('div', { class: 'pl' }, label), h('div', { class: `pv${warn ? ' bad-text' : ''}` }, big), h('div', { class: 'ps' }, small));
 		const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 40, height: 40 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
 		return h('section', { class: `card pcard${p.active ? '' : ' off'}` },
 			h('header', { class: 'phead' }, mark, h('div', { class: 'grow' }, h('h3', {}, p.name), h('p', { class: 'muted m0' }, p.role)), badge(p.active ? 'active' : 'idle')),
@@ -309,7 +319,9 @@ function providerCards(prov, flt) {
 			h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Countries'), h('span', { class: 'chans' }, p.countries.map((c) => h('span', { class: 'chip' }, COUNTRY[c] ? h('img', { class: 'flag', src: `/country/${COUNTRY[c][0]}.png`, alt: '', width: 20, height: 20 }) : null, COUNTRY[c]?.[1] || c)))),
 			p.notes.length ? h('div', { class: 'prow' }, h('span', { class: 'pl' }, 'Setup'), h('span', { class: 'chans' }, p.notes.map((n) => h('span', { class: 'tag' }, n)))) : null,
 			p.id === flt.provider ? floatBlock(flt) : null,
-			h('div', { class: 'pfoot muted small' }, mine.length ? [`24 h: ${ok} completed · ${open} in progress · `, h('span', { class: bad ? 'bad-text' : null }, `${bad} failed or unknown`)] : 'No activity in the last 24 hours.'));
+			mine.length ? h('div', { class: 'pstats' },
+				stat('Collected', fmtAmount(inn.amount), plural(inn.n, 'payment')), stat('Paid out', fmtAmount(out.amount), plural(out.n, 'payment')),
+				stat('In progress', String(open), 'waiting'), stat('Failed / unknown', String(bad), 'last 24 h', bad > 0)) : h('p', { class: 'muted m0' }, 'No activity in the last 24 hours.'));
 	}));
 }
 
