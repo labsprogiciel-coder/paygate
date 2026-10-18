@@ -28,7 +28,7 @@
     "PISPI_ENABLED": "true",
     "PISPI_POLL": "true",
     "PISPI_RTP": "false",
-    "PISPI_COUNTRY": "BF",
+    "PISPI_COUNTRY": "CI",
     "PI_SPI_PARTICIPANT": "CIC999",
     "PI_SPI_BUSINESS_API_URL": "https://no-mtls.piz.simulateurs.pi-bceao.com",
     "PI_SP_API_OAUTH_URL": "https://piz-simulateur-business-sandbox.auth.eu-west-1.amazoncognito.com/oauth2/token"
