@@ -19,6 +19,7 @@
     "wrangler": "^4.147.0"
   },
   "dependencies": {
-    "@clerk/backend": "^3.23.2"
+    "@clerk/backend": "^3.23.2",
+    "@sentry/cloudflare": "^11.8.0"
   }
 }

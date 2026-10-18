@@ -39,7 +39,7 @@ npm install
 cp .dev.vars.example .dev.vars        # set ADMIN_API_KEY and WEBHOOK_MASTER_SECRET
 npm run db:migrate:local
 npm run dev                           # PROVIDER_MODE=sandbox: nothing moves, the phone number's last digits pick the outcome
-npm test                              # 78 tests, node:test, no network
+npm test                              # 82 tests, node:test, no network
 npm run check                         # tsc
 ```
 
@@ -55,6 +55,7 @@ npm run check                         # tsc
 | `src/callbacks.ts` | Provider callbacks in |
 | `src/reconcile.ts`, `float.ts` | Settling what callbacks missed; wallet monitoring |
 | `src/tenants.ts`, `admin.ts`, `auth.ts` | Tenants, API keys, webhook secrets, the operator API, operator sign-in with Clerk |
+| `src/sentry.ts`, `alerts.ts` | Error reporting to Sentry (scrubbed) and operator alerts |
 | `public/` | The operator console (static files: `index.html`, `console.js`, `console.css`), served at `/` by the Worker's assets; it only calls `/admin/*` |
 | `migrations/` | D1 schema |
 

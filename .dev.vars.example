@@ -9,3 +9,5 @@ PI_SP_API_CLIENT_SECRET=
 PI_SPI_API_KEY=
 PI_SPI_ACCOUNT_ALIAS=
 ALERT_WEBHOOK_URL=
+# Sentry error reporting (optional; off while empty)
+SENTRY_DSN=
