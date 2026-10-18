@@ -60,6 +60,28 @@ const channel = (p) => p.rail === 'mobile_money' ? (OPERATOR[p.operator] || p.op
 const badge = (s) => h('span', { class: `badge s-${s}` }, s);
 const pretty = (t) => { if (!t) return null; try { return JSON.stringify(JSON.parse(t), null, 2) } catch { return t } };
 const toast = (m) => { const t = h('div', { class: 'toast', role: 'status' }, m); document.body.append(t); setTimeout(() => t.remove(), 2600); };
+
+/**
+ * What needs a person, as toasts that stay until dismissed or acted on. A dismissed one stays away for this tab until what it says changes
+ * (its key includes the count), so a refresh does not bring back what was already seen.
+ */
+const DISMISSED = 'pg_dismissed';
+const dismissedKeys = () => { try { return new Set(JSON.parse(sessionStorage.getItem(DISMISSED) || '[]')) } catch { return new Set() } };
+const dismiss = (k) => { try { sessionStorage.setItem(DISMISSED, JSON.stringify([...dismissedKeys(), k].slice(-50))) } catch { /* only a convenience */ } };
+function notices(items) {
+	let stack = document.querySelector('.notices');
+	if (!stack) { stack = h('div', { class: 'notices', role: 'region', 'aria-label': 'Needs attention' }); document.body.append(stack); }
+	const gone = dismissedKeys();
+	put(stack, items.filter((n) => !gone.has(n.key)).map((n) => {
+		const el = h('div', { class: `notice ${n.level}`, role: n.level === 'bad' ? 'alert' : 'status' });
+		const close = () => { dismiss(n.key); el.remove(); };
+		put(el, h('div', { class: 'grow' }, h('strong', {}, n.title), h('div', { class: 'notice-why' }, n.why)),
+			h('a', { class: 'btn sm', href: n.href, onclick: () => el.remove() }, n.action),
+			h('button', { class: 'notice-x', 'aria-label': 'Dismiss', onclick: close }, '×'));
+		return el;
+	}));
+}
+const clearNotices = () => document.querySelector('.notices')?.replaceChildren();
 const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead') } };
 
 // ---- overlays -------------------------------------------------------------------------------------------------------------------
@@ -205,6 +227,7 @@ async function start() {
 }
 async function route() {
 	document.querySelectorAll('.overlay').forEach((o) => o.remove());
+	clearNotices(); // the overview puts back what still needs a person
 	const name = (location.hash.slice(2) || 'overview').split('?')[0];
 	const page = PAGES[name] ? name : 'overview';
 	const main = h('main', { class: 'main' }, SKELETON[page]());
@@ -245,16 +268,16 @@ async function overview(main) {
 	const [flt, prov, att, recent, feed] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/attention'),
 		api('GET', '/admin/payments?limit=8'), api('GET', '/admin/events?limit=12')]);
 
-	// what needs a person, most serious first
+	// what needs a person, most serious first, as toasts; wallets below the floor are grouped so three countries make one toast, not three
 	const todo = [];
-	if (att.unknown) todo.push(['bad', plural(att.unknown, 'payout'), 'with an unknown outcome', 'Money may have been sent. A person must decide.', '#/payments?status=unknown', 'Resolve']);
-	if (att.deadWebhooks) todo.push(['warn', plural(att.deadWebhooks, 'webhook'), 'not delivered', 'A product was not told about a payment.', '#/events?source=webhook&problems=1', 'Retry']);
-	if (att.rejectedCallbacks24h) todo.push(['warn', plural(att.rejectedCallbacks24h, 'callback'), 'rejected (24 h)', 'Failed the signature or shape check.', '#/events?source=callback&problems=1', 'Inspect']);
-	for (const r of flt.rows || []) if (r.status === 'critical' || r.status === 'low') todo.push([r.status === 'critical' ? 'bad' : 'warn', `${r.country} float`, r.status === 'critical' ? 'critical' : 'low', r.reasons.join(' ') || `Below ${fmtAmount(flt.floor)}.`, '#/providers', 'View']);
-	const attentionBlock = todo.length
-		? h('div', { class: 'todo' }, todo.map(([level, what, state, why, href, action]) => h('div', { class: `todo-item ${level}` },
-			h('div', { class: 'grow' }, h('strong', {}, what), ` ${state}`, h('div', { class: 'todo-why' }, why)), href ? h('a', { class: 'btn sm', href }, action) : null)))
-		: h('div', { class: 'alert ok' }, 'Nothing needs a person right now.');
+	if (att.unknown) todo.push({ key: `unknown:${att.unknown}`, level: 'bad', title: `${plural(att.unknown, 'payout')} with an unknown outcome`, why: 'Money may have been sent. A person must decide.', href: '#/payments?status=unknown', action: 'Resolve' });
+	const floats = (flt.rows || []).filter((r) => r.status === 'critical' || r.status === 'low');
+	for (const [status, level] of [['critical', 'bad'], ['low', 'warn']]) {
+		const rows = floats.filter((r) => r.status === status);
+		if (rows.length) todo.push({ key: `float-${status}:${rows.map((r) => r.country).join(',')}`, level, title: `Float ${status}: ${rows.map((r) => r.country).join(', ')}`, why: `${rows[0].reasons.join(' ') || 'Below the minimum float'} (${fmtAmount(flt.floor)}).`, href: '#/providers', action: 'View' });
+	}
+	if (att.deadWebhooks) todo.push({ key: `dead:${att.deadWebhooks}`, level: 'warn', title: `${plural(att.deadWebhooks, 'webhook')} not delivered`, why: 'A product was not told about a payment.', href: '#/events?source=webhook&problems=1', action: 'Retry' });
+	if (att.rejectedCallbacks24h) todo.push({ key: `rejected:${att.rejectedCallbacks24h}`, level: 'warn', title: `${plural(att.rejectedCallbacks24h, 'callback')} rejected (24 h)`, why: 'Failed the signature or shape check.', href: '#/events?source=callback&problems=1', action: 'Inspect' });
 
 	// the last 24 hours, every provider together
 	const rows = prov.last24h;
@@ -272,11 +295,11 @@ async function overview(main) {
 	const live = prov.data.some((p) => p.notes.includes('LIVE'));
 	put(main,
 		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), h('button', { class: 'btn', onclick: route }, 'Refresh')),
-		attentionBlock,
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
 		h('div', { class: 'cols' },
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))));
+	notices(todo);
 }
 
 /** A short list for the overview; the full table is on the payments page. */
