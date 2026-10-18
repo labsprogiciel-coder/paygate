@@ -120,12 +120,13 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 
 | | |
 |---|---|
-| `POST /admin/tenants` | `{ id, name, webhookUrl?, maxAmount?, idNamespace? }` |
-| `PATCH /admin/tenants/{id}` | `{ webhookUrl?, maxAmount?, status?, name? }` (`status`: `active` / `suspended`) |
+| `POST /admin/tenants` | `{ id, name, webhookUrl?, maxAmount?, idNamespace?, logo? }`. `logo` is the product's logo for the console: a PNG, JPEG or WebP `data:` URL of at most 48 KB (never SVG); `null` removes it |
+| `PATCH /admin/tenants/{id}` | `{ webhookUrl?, maxAmount?, status?, name?, logo? }` (`status`: `active` / `suspended`) |
 | `POST /admin/tenants/{id}/keys` | `{ label? }` → `{ id, key }`, shown once |
 | `DELETE /admin/tenants/{id}/keys/{keyId}` | revoke |
 | `GET /admin/tenants/{id}/webhook-secret` | the secret your product verifies with; `POST` rotates it |
 | `GET /admin/payments?status=&tenant=&kind=&limit=&before=` | with the detail tenants never see; newest first, `limit` 1–100 (default 50). Returns `{ data, total, next }`: pass `next` as `before` for the next page |
+| `GET /admin/payments/stats?tenant=&kind=` | the payments page's headline: `completed` `{ n, amount }`, `settled` and `successRate` for the last 24 h; `processing` and `unknown` `{ n, amount }` for everything still open, whatever its age |
 | `GET /admin/payments/{id}` | with its full history |
 | `POST /admin/payments/{id}/resolve` | `{ outcome: "completed" \| "failed", note }` for an `unknown` payout or a manually confirmed PI-SPI payment |
 | `GET /admin/webhooks/dead`, `POST /admin/webhooks/{id}/retry` | undeliverable events |
