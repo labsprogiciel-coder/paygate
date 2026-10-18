@@ -224,3 +224,21 @@ table.ch tr.grp td { border-top: 1px solid var(--line); }
 .stack .logo { border-radius: 50%; box-shadow: 0 0 0 2px var(--panel); background: var(--panel); }
 .stack .logo + .logo { margin-left: -7px; }
 table.ch td { vertical-align: middle; }
+
+/* PSP logos inside badges and titles */
+.plogo { width: 16px; height: 16px; border-radius: 4px; vertical-align: -3px; margin-right: 6px; object-fit: cover; }
+.badge .plogo { width: 14px; height: 14px; margin-right: 5px; vertical-align: -2px; }
+
+/* a tenant's mark: its logo, or its initials */
+.tmark { flex: none; display: inline-grid; place-items: center; border-radius: 6px; object-fit: contain; background: var(--idle-bg); color: var(--idle); font-weight: 700; border: 1px solid var(--line); }
+img.tmark { background: var(--panel); }
+.tm-20 { width: 20px; height: 20px; font-size: 9px; border-radius: 5px; }
+.tm-28 { width: 28px; height: 28px; font-size: 11px; border-radius: 7px; }
+.tm-44 { width: 44px; height: 44px; font-size: 16px; border-radius: 11px; }
+.tm-56 { width: 56px; height: 56px; font-size: 20px; border-radius: 14px; }
+.tchip { gap: 6px; vertical-align: middle; }
+.ev-meta .tchip, .small .tchip { font-size: inherit; }
+.logo-pick { display: flex; align-items: center; gap: 10px; }
+.logo-pick > label.btn { cursor: pointer; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+[hidden] { display: none !important; }

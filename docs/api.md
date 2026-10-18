@@ -120,8 +120,8 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 
 | | |
 |---|---|
-| `POST /admin/tenants` | `{ id, name, webhookUrl?, maxAmount?, idNamespace? }` |
-| `PATCH /admin/tenants/{id}` | `{ webhookUrl?, maxAmount?, status?, name? }` (`status`: `active` / `suspended`) |
+| `POST /admin/tenants` | `{ id, name, webhookUrl?, maxAmount?, idNamespace?, logo? }`. `logo` is the product's logo for the console: a PNG, JPEG or WebP `data:` URL of at most 48 KB (never SVG); `null` removes it |
+| `PATCH /admin/tenants/{id}` | `{ webhookUrl?, maxAmount?, status?, name?, logo? }` (`status`: `active` / `suspended`) |
 | `POST /admin/tenants/{id}/keys` | `{ label? }` → `{ id, key }`, shown once |
 | `DELETE /admin/tenants/{id}/keys/{keyId}` | revoke |
 | `GET /admin/tenants/{id}/webhook-secret` | the secret your product verifies with; `POST` rotates it |

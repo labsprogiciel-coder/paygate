@@ -3,14 +3,14 @@ import { hmacHex, newId, safeEqual, sha256Hex, safeUrl, on } from './util.ts';
 
 export interface Tenant {
 	id: string; name: string; status: 'active' | 'suspended'; webhook_url: string | null; webhook_version: number;
-	max_amount: number | null; id_namespace: string | null; created_at: number;
+	max_amount: number | null; id_namespace: string | null; created_at: number; logo?: string | null;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,31}$/;
 const KEY = /^pgk_([0-9a-f]{12})_([0-9a-f]{64})$/;
 const TOUCH_EVERY_MS = 10 * 60_000;
 
-export interface TenantInput { id: unknown; name: unknown; webhookUrl?: unknown; maxAmount?: unknown; idNamespace?: unknown }
+export interface TenantInput { id: unknown; name: unknown; webhookUrl?: unknown; maxAmount?: unknown; idNamespace?: unknown; logo?: unknown }
 
 export async function createTenant(env: Env, input: TenantInput, now = Date.now()): Promise<Tenant> {
 	if (typeof input.id !== 'string' || !SLUG.test(input.id)) throw new ApiError(400, 'invalid_tenant', 'id must be a lowercase slug of 2 to 32 characters (letters, digits, dashes)');
@@ -18,8 +18,10 @@ export async function createTenant(env: Env, input: TenantInput, now = Date.now(
 	const webhook = input.webhookUrl === undefined || input.webhookUrl === null ? null : webhookUrl(env, input.webhookUrl);
 	const max = input.maxAmount === undefined || input.maxAmount === null ? null : maxAmount(input.maxAmount);
 	const ns = input.idNamespace === undefined || input.idNamespace === null ? null : idNamespace(input.idNamespace);
+	const img = input.logo === undefined || input.logo === null ? null : logo(input.logo);
 	if (await getTenant(env, input.id)) throw new ApiError(409, 'tenant_exists', 'A tenant with this id already exists');
 	await env.DB.prepare(`INSERT INTO tenants (id, name, webhook_url, max_amount, id_namespace, created_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(input.id, input.name.trim(), webhook, max, ns, now).run();
+	if (img) await setLogo(env, input.id, img);
 	return (await getTenant(env, input.id))!;
 }
 
@@ -34,12 +36,35 @@ function maxAmount(v: unknown): number {
 	if (typeof v !== 'number' || !Number.isInteger(v) || v < 100) throw new ApiError(400, 'invalid_max_amount', 'maxAmount must be a whole number of XOF, at least 100');
 	return v;
 }
+/**
+ * A tenant's logo: a small PNG, JPEG or WebP as a data: URL (the console shrinks uploads to 128 px). Never SVG, which can carry script.
+ * The bytes must really be the type they claim. Written on its own, so a database without the logo column (migration 0002) still works for the rest.
+ */
+export const MAX_LOGO_BYTES = 48 * 1024;
+const LOGO = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
+const MAGIC: Record<string, (b: Uint8Array) => boolean> = {
+	png: (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47,
+	jpeg: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+	webp: (b) => String.fromCharCode(...b.subarray(0, 4)) === 'RIFF' && String.fromCharCode(...b.subarray(8, 12)) === 'WEBP',
+};
+export function logo(v: unknown): string {
+	const bad = () => new ApiError(400, 'invalid_logo', 'logo must be a PNG, JPEG or WebP image as a base64 data: URL');
+	const m = typeof v === 'string' && v.length < MAX_LOGO_BYTES * 2 ? LOGO.exec(v) : null;
+	if (!m) throw typeof v === 'string' && v.length >= MAX_LOGO_BYTES * 2 ? new ApiError(400, 'logo_too_large', `logo must be at most ${MAX_LOGO_BYTES / 1024} KB`) : bad();
+	let bytes: Uint8Array;
+	try { bytes = Uint8Array.from(atob(m[2]!), (c) => c.charCodeAt(0)); } catch { throw bad(); }
+	if (bytes.length > MAX_LOGO_BYTES) throw new ApiError(400, 'logo_too_large', `logo must be at most ${MAX_LOGO_BYTES / 1024} KB`);
+	if (bytes.length < 12 || !MAGIC[m[1]!]!(bytes)) throw bad();
+	return v as string;
+}
+const setLogo = (env: Env, id: string, v: string | null) => env.DB.prepare(`UPDATE tenants SET logo = ? WHERE id = ?`).bind(v, id).run();
+
 function idNamespace(v: unknown): string {
 	if (typeof v !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(v)) throw new ApiError(400, 'invalid_id_namespace', 'idNamespace must be a lowercase slug');
 	return v;
 }
 
-export async function updateTenant(env: Env, id: string, patch: { webhookUrl?: unknown; maxAmount?: unknown; status?: unknown; name?: unknown }): Promise<Tenant> {
+export async function updateTenant(env: Env, id: string, patch: { webhookUrl?: unknown; maxAmount?: unknown; status?: unknown; name?: unknown; logo?: unknown }): Promise<Tenant> {
 	const t = await getTenant(env, id);
 	if (!t) throw new ApiError(404, 'not_found', 'No such tenant');
 	const next = {
@@ -48,7 +73,9 @@ export async function updateTenant(env: Env, id: string, patch: { webhookUrl?: u
 		status: patch.status === undefined ? t.status : patch.status === 'active' || patch.status === 'suspended' ? patch.status : (() => { throw new ApiError(400, 'invalid_status', 'status is active or suspended'); })(),
 		name: patch.name === undefined ? t.name : typeof patch.name === 'string' && patch.name.trim() ? patch.name.trim() : (() => { throw new ApiError(400, 'invalid_tenant', 'name cannot be empty'); })(),
 	};
+	const img = patch.logo === undefined ? undefined : patch.logo === null ? null : logo(patch.logo);
 	await env.DB.prepare(`UPDATE tenants SET webhook_url = ?, max_amount = ?, status = ?, name = ? WHERE id = ?`).bind(next.webhook_url, next.max_amount, next.status, next.name, id).run();
+	if (img !== undefined) await setLogo(env, id, img);
 	return (await getTenant(env, id))!;
 }
 

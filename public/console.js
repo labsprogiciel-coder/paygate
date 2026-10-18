@@ -40,6 +40,8 @@ const fmtAmount = (n) => n == null ? '–' : `${new Intl.NumberFormat('fr-FR').f
 const fmtTime = (ms) => ms ? new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '–';
 const ago = (ms) => { if (!ms) return '–'; const s = Math.max(0, (Date.now() - ms) / 1000); return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 const PSP = { pawapay: 'pawaPay', pispi: 'PI-SPI', sandbox: 'Sandbox' };
+const PSP_LOGO = { pawapay: '/providers/pawapay.png', pispi: '/providers/pispi.png' };
+const pspLogo = (id, size = 16) => PSP_LOGO[id] ? h('img', { class: 'plogo', src: PSP_LOGO[id], alt: '', width: size, height: size }) : null;
 const OPERATOR = { orange: 'Orange Money', wave: 'Wave', moov: 'Moov Money' };
 const RAIL = { mobile_money: 'Mobile money', pispi_qr: 'Bank · QR code', pispi_rtp: 'Bank · payment request' };
 const ICON = { orange: 'orange', wave: 'wave', moov: 'moov' };
@@ -55,10 +57,28 @@ const avatar = (p, kind = p.object ?? p.kind) => {
 const icon = (p) => { const f = p.rail === 'mobile_money' ? ICON[p.operator] : p.rail.startsWith('pispi') ? 'pispi' : null; return f ? h('img', { class: 'logo', src: `/providers/${f}.png`, alt: '', width: 20, height: 20 }) : null; };
 const COUNTRY = { CIV: ['ci', "Côte d'Ivoire"], SEN: ['sn', 'Senegal'], BFA: ['bf', 'Burkina Faso'] };
 const origin = (p) => { const c = COUNTRY[p.country]; return c ? h('span', { class: 'chan' }, h('img', { class: 'flag', src: `/country/${c[0]}.png`, alt: '', width: 20, height: 20 }), h('span', { title: c[1] }, p.country)) : h('span', { class: 'muted' }, '–'); };
-const pspBadge = (p) => h('span', { class: `badge psp psp-${p.provider}` }, PSP[p.provider] || p.provider);
+const pspBadge = (p) => h('span', { class: `badge psp psp-${p.provider}` }, pspLogo(p.provider, 14), PSP[p.provider] || p.provider);
 const channel = (p) => p.rail === 'mobile_money' ? (OPERATOR[p.operator] || p.operator || 'Mobile money') : (RAIL[p.rail] || p.rail);
 const badge = (s) => h('span', { class: `badge s-${s}` }, s);
 const pretty = (t) => { if (!t) return null; try { return JSON.stringify(JSON.parse(t), null, 2) } catch { return t } };
+/**
+ * Tenants are apps and products: each has a mark, its logo or else its initials. The directory is read once a minute at most, so every page
+ * can show who a payment belongs to without asking again.
+ */
+const TENANTS = new Map();
+let tenantsAt = 0;
+async function loadTenants(force = false) {
+	if (!force && Date.now() - tenantsAt < 60_000) return;
+	try { const { data } = await api('GET', '/admin/tenants'); TENANTS.clear(); for (const t of data) TENANTS.set(t.id, t); tenantsAt = Date.now(); } catch (e) { if (e instanceof AuthError || e instanceof NotOperator) throw e; }
+}
+const initials = (s) => (s || '?').split(/[\s_-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+const tenantMark = (t, size = 20) => {
+	const name = t?.name || t?.id || '?';
+	return t?.logo ? h('img', { class: `tmark tm-${size}`, src: t.logo, alt: '', width: size, height: size }) : h('span', { class: `tmark tm-${size} tm-txt`, 'aria-hidden': 'true' }, initials(name));
+};
+/** A tenant as a mark and a name, from its id. */
+const tenantChip = (id) => { if (!id) return null; const t = TENANTS.get(id); return h('span', { class: 'chan tchip', title: id }, tenantMark(t ?? { id }), t?.name || id); };
+
 const toast = (m) => { const t = h('div', { class: 'toast', role: 'status' }, m); document.body.append(t); setTimeout(() => t.remove(), 2600); };
 
 /**
@@ -238,6 +258,7 @@ async function route() {
 	put(app, h('div', { class: 'shell' }, h('aside', { class: 'side' }, h('div', { class: 'brand' }, 'Paygate', h('small', {}, 'Operator console')), nav, h('div', { class: 'spacer' }),
 		h('button', { class: 'btn sm', onclick: () => signOut() }, 'Sign out')), main));
 	try {
+		await loadTenants();
 		await PAGES[page][1](main);
 		refreshAttention(nav);
 	} catch (e) {
@@ -307,7 +328,7 @@ function paymentList(rows) {
 	if (!rows.length) return h('div', { class: 'card empty' }, 'No payments yet.');
 	return h('div', { class: 'list' }, rows.map((p) => h('div', { class: 'li click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
 		avatar(p),
-		h('div', { class: 'grow min0' }, h('div', { class: 'ellipsis' }, h('span', { class: 'mono' }, p.reference)), h('div', { class: 'muted small ellipsis' }, p.tenant, ' · ', channel(p), ' · ', ago(p.createdAt))),
+		h('div', { class: 'grow min0' }, h('div', { class: 'ellipsis' }, h('span', { class: 'mono' }, p.reference)), h('div', { class: 'muted small ellipsis' }, tenantChip(p.tenant), ' · ', channel(p), ' · ', ago(p.createdAt))),
 		h('span', { class: 'num strong' }, fmtAmount(p.amount)), badge(p.status))));
 }
 
@@ -334,7 +355,7 @@ function pspSection(p, rows, floor) {
 	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
 	const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
 	const open = sum((r) => r.status === 'processing'), bad = sum((r) => r.status === 'failed' || r.status === 'unknown');
-	const mark = p.id === 'pispi' ? h('img', { class: 'pmark', src: '/providers/pispi.png', alt: '', width: 44, height: 44 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : 'pP');
+	const mark = PSP_LOGO[p.id] ? h('img', { class: 'pmark', src: PSP_LOGO[p.id], alt: '', width: 44, height: 44 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : p.id.slice(0, 2));
 	const kpi = (label, value, sub, warn) => h('div', { class: 'kpi' }, h('div', { class: 'pl' }, label), h('div', { class: `kv-big${warn ? ' bad-text' : ''}` }, value), h('div', { class: 'ps' }, sub));
 
 	// within a country, channels with the same collection and payout terms share one row: their logos stack, the limits show once
@@ -384,7 +405,7 @@ function pspSection(p, rows, floor) {
 function paymentsTable(rows) {
 	return table([{ label: 'When' }, { label: 'Tenant' }, { label: 'Type' }, { label: 'PSP' }, { label: 'Channel' }, { label: 'Origin' }, { label: 'Reference' }, { label: 'Counterparty' }, { label: 'Amount', num: true }, { label: 'Status' }],
 		rows.map((p) => h('tr', { class: 'click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
-			h('td', { title: fmtTime(p.createdAt) }, ago(p.createdAt)), h('td', {}, p.tenant), h('td', {}, p.object === 'collection' ? '↓ in' : '↑ out'), h('td', {}, pspBadge(p)), h('td', {}, h('span', { class: 'chan' }, icon(p), channel(p))), h('td', {}, origin(p)),
+			h('td', { title: fmtTime(p.createdAt) }, ago(p.createdAt)), h('td', {}, tenantChip(p.tenant)), h('td', {}, p.object === 'collection' ? '↓ in' : '↑ out'), h('td', {}, pspBadge(p)), h('td', {}, h('span', { class: 'chan' }, icon(p), channel(p))), h('td', {}, origin(p)),
 			h('td', { class: 'mono' }, p.reference), h('td', { class: 'mono' }, p.counterparty || '–'), h('td', { class: 'num' }, fmtAmount(p.amount)), h('td', {}, badge(p.status)))),
 		'No payments match.');
 }
@@ -417,7 +438,7 @@ async function paymentDrawer(id) {
 			h('div', { class: 'bar' }, h('h1', { class: 'grow mono t16' }, p.id), badge(p.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			p.status === 'unknown' ? h('div', { class: 'alert bad' }, 'The outcome of this payout is unknown. Check the provider dashboard for the money before deciding.') : null,
 			h('div', { class: 'card' }, h('dl', { class: 'kv' },
-				row('Tenant', p.tenant), row('Type', p.object), row('Reference', h('span', { class: 'mono' }, p.reference)), row('PSP partner', pspBadge(p)), row(p.rail === 'mobile_money' ? 'Channel (MNO)' : 'Channel', h('span', { class: 'chan' }, icon(p), channel(p))), row('Rail', p.rail), row('Origin', COUNTRY[p.country] ? h('span', { class: 'chan' }, origin(p), COUNTRY[p.country][1]) : null), row('Amount', fmtAmount(p.amount)), row('Counterparty', h('span', { class: 'mono' }, p.counterparty || '')),
+				row('Tenant', tenantChip(p.tenant)), row('Type', p.object), row('Reference', h('span', { class: 'mono' }, p.reference)), row('PSP partner', pspBadge(p)), row(p.rail === 'mobile_money' ? 'Channel (MNO)' : 'Channel', h('span', { class: 'chan' }, icon(p), channel(p))), row('Rail', p.rail), row('Origin', COUNTRY[p.country] ? h('span', { class: 'chan' }, origin(p), COUNTRY[p.country][1]) : null), row('Amount', fmtAmount(p.amount)), row('Counterparty', h('span', { class: 'mono' }, p.counterparty || '')),
 				row('PSP payment id', h('span', { class: 'mono' }, p.providerId || '')), row('PSP settlement ref', h('span', { class: 'mono' }, p.providerRef || '')),
 				row('Created', fmtTime(p.createdAt)), row('Expires', p.expiresAt ? fmtTime(p.expiresAt) : null), row('Settled', p.settledAt ? fmtTime(p.settledAt) : null), row('Attempts', String(p.attempts)),
 				row('Failure shown', p.failure), row('Failure detail', p.failureDetail), row('Metadata', p.metadata ? h('pre', {}, JSON.stringify(p.metadata, null, 2)) : null))),
@@ -443,11 +464,12 @@ function resolveModal(p, outcomes, done) {
 
 // ---- tenants --------------------------------------------------------------------------------------------------------------------
 async function tenants(main) {
-	const { data } = await api('GET', '/admin/tenants');
+	await loadTenants(true);
+	const data = [...TENANTS.values()];
 	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null, data.map((t) => t.id)) }, 'New tenant')),
-		table([{ label: 'Id' }, { label: 'Name' }, { label: 'Status' }, { label: 'Webhook' }, { label: 'Max payment', num: true }, { label: 'Created' }],
+		table([{ label: 'Name' }, { label: 'Id' }, { label: 'Status' }, { label: 'Webhook' }, { label: 'Max payment', num: true }, { label: 'Created' }],
 			data.map((t) => h('tr', { class: 'click', tabindex: 0, onclick: () => tenantDrawer(t.id), onkeydown: (e) => { if (e.key === 'Enter') tenantDrawer(t.id) } },
-				h('td', { class: 'mono' }, t.id), h('td', {}, t.name), h('td', {}, badge(t.status)), h('td', { class: 'mono' }, t.webhook_url || '–'), h('td', { class: 'num' }, t.max_amount ? fmtAmount(t.max_amount) : 'default'), h('td', {}, fmtTime(t.created_at)))),
+				h('td', {}, h('span', { class: 'chan' }, tenantMark(t, 28), h('strong', {}, t.name))), h('td', { class: 'mono' }, t.id), h('td', {}, badge(t.status)), h('td', { class: 'mono' }, t.webhook_url || '–'), h('td', { class: 'num' }, t.max_amount ? fmtAmount(t.max_amount) : 'default'), h('td', {}, fmtTime(t.created_at)))),
 			'No tenants yet. Create one for each product that will use Paygate.'));
 }
 const SLUG = /^[a-z][a-z0-9-]{1,31}$/;
@@ -460,6 +482,20 @@ function slugFor(name, taken) {
 	return id;
 }
 
+/** An uploaded image as a 128 px square logo (contained, transparent around), WebP or else PNG: small enough to store with the tenant. */
+async function shrinkLogo(file) {
+	if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('Choose a PNG, JPEG or WebP image.');
+	const src = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('The file could not be read.')); r.readAsDataURL(file); });
+	const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('This image could not be opened.')); i.src = src; });
+	const S = 128, c = document.createElement('canvas'); c.width = c.height = S;
+	const k = Math.min(S / img.naturalWidth, S / img.naturalHeight), w = img.naturalWidth * k, ht = img.naturalHeight * k;
+	c.getContext('2d').drawImage(img, (S - w) / 2, (S - ht) / 2, w, ht);
+	let out = c.toDataURL('image/webp', 0.9);
+	if (!out.startsWith('data:image/webp')) out = c.toDataURL('image/png');
+	if (out.length > 60_000) throw new Error('This image is too detailed. Try a simpler one.');
+	return out;
+}
+
 function tenantForm(t, taken = []) {
 	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'made from the name', pattern: SLUG.source.slice(1, -1), spellcheck: 'false', autocomplete: 'off' }),
 		name: h('input', { value: t?.name || '', maxlength: 80, placeholder: t ? null : 'Courtly', autocomplete: 'off' }),
@@ -467,6 +503,19 @@ function tenantForm(t, taken = []) {
 		ns: h('input', { value: '', placeholder: 'leave empty for new products', spellcheck: 'false' }),
 		key: h('input', { type: 'checkbox', checked: true }) };
 	const err = h('div'), idHint = h('small', { class: 'hint' });
+	// the logo: undefined = unchanged, null = removed, a data: URL = new
+	let logo, current = t?.logo || null;
+	const preview = h('span', { class: 'logo-preview' }), remove = h('button', { class: 'btn sm', type: 'button' }, 'Remove'), pickLabel = h('span');
+	const showLogo = () => { put(preview, tenantMark({ id: f.id.value || t?.id, name: f.name.value || t?.name, logo: current }, 56)); remove.hidden = !current; put(pickLabel, current ? 'Change' : 'Upload'); };
+	const pick = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', class: 'sr-only' });
+	pick.addEventListener('change', async () => {
+		const file = pick.files?.[0]; pick.value = '';
+		if (!file) return;
+		try { logo = current = await shrinkLogo(file); put(err); showLogo(); } catch (x) { put(err, h('div', { class: 'alert bad' }, x.message)); }
+	});
+	remove.addEventListener('click', () => { logo = null; current = null; showLogo(); });
+	const logoField = h('div', { class: 'field' }, h('label', {}, 'Logo ', h('small', {}, '(optional; PNG, JPEG or WebP, shown at 128 px)')),
+		h('div', { class: 'logo-pick' }, preview, h('label', { class: 'btn sm' }, pickLabel, pick), remove));
 	// the id follows the name until someone types in it
 	let idTouched = false;
 	const checkId = () => {
@@ -475,7 +524,7 @@ function tenantForm(t, taken = []) {
 			: taken.includes(v) ? h('span', { class: 'bad-text' }, 'A tenant already has this id.') : [h('code', {}, v), ' is free. It cannot be changed later.']);
 	};
 	if (!t) {
-		f.name.addEventListener('input', () => { if (!idTouched) { f.id.value = slugFor(f.name.value, taken); checkId() } });
+		f.name.addEventListener('input', () => { if (!idTouched) { f.id.value = slugFor(f.name.value, taken); checkId() } if (!current) showLogo(); });
 		f.id.addEventListener('input', () => { idTouched = f.id.value !== ''; f.id.value = f.id.value.toLowerCase(); checkId() });
 		checkId();
 	}
@@ -483,18 +532,20 @@ function tenantForm(t, taken = []) {
 		e.target.disabled = true;
 		try {
 			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
-			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max }); m.close(); toast('Saved'); route(); return; }
+			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); tenantsAt = 0; route(); return; }
 			const id = f.id.value.trim();
-			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null });
+			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null, logo: logo || null });
+			tenantsAt = 0;
 			m.close(); route();
 			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
 		} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
 	} }, t ? 'Save' : 'Create tenant');
-	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint),
+	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint), logoField,
 		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
 		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
 		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, '(only for products migrated from another gateway)')), err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true });
+	showLogo();
 	f.name.focus();
 }
 
@@ -513,7 +564,7 @@ async function tenantDrawer(id) {
 	const render = async () => {
 		const [t, keys] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`)]);
 		put(d.box, 
-			h('div', { class: 'bar' }, h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
+			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			h('div', { class: 'card' }, h('dl', { class: 'kv' }, h('dt', {}, 'Id'), h('dd', { class: 'mono' }, t.id), h('dt', {}, 'Webhook'), h('dd', { class: 'mono' }, t.webhook_url || '–'), h('dt', {}, 'Max payment'), h('dd', {}, t.max_amount ? fmtAmount(t.max_amount) : 'gateway default'),
 				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)))),
 			h('div', { class: 'actions left mb20' },
@@ -558,12 +609,12 @@ function feedItem(e, { compact = false, onChange } = {}) {
 	let title, meta;
 	if (e.source === 'payment') {
 		title = [`${e.kind === 'disbursement' ? 'Payout' : 'Collection'} ${e.type.replace(/_/g, ' ')}`, e.amount != null ? h('span', { class: 'muted' }, ` · ${fmtAmount(e.amount)}`) : null];
-		meta = [e.tenant, payLink(e.paymentId), who(e.actor), e.detail];
+		meta = [tenantChip(e.tenant), payLink(e.paymentId), who(e.actor), e.detail];
 	} else if (e.source === 'callback') {
-		title = [`${PSP[e.provider] || e.provider} callback `, h('span', { class: 'mono' }, e.type)];
+		title = [pspLogo(e.provider), `${PSP[e.provider] || e.provider} callback `, h('span', { class: 'mono' }, e.type)];
 		meta = [e.status === 'accepted' ? 'Signature and shape accepted' : 'Rejected: failed the signature or shape check'];
 	} else {
-		title = [h('span', { class: 'mono' }, e.type), ` to ${e.tenant}`];
+		title = [h('span', { class: 'mono' }, e.type), ' to ', tenantChip(e.tenant)];
 		meta = [payLink(e.paymentId), e.attempts ? plural(e.attempts, 'attempt') : 'not sent yet', e.detail];
 	}
 	const retry = e.source === 'webhook' && e.status !== 'delivered' && !compact
