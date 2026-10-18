@@ -56,25 +56,57 @@ const pemToDer = (pem: string) => b64(pem.replace(/-----[A-Z ]+-----/g, '').repl
 
 export type KeyFetcher = (keyid: string) => Promise<string | null>;
 
-export async function verifyCallback(req: { method: string; url: URL; headers: Headers; body: string }, getKey: KeyFetcher, nowSeconds = Math.floor(Date.now() / 1000), toleranceSeconds = 300): Promise<boolean> {
+/**
+ * ECDSA signatures come in two encodings: the raw r‖s that RFC 9421 and WebCrypto use, and ASN.1 DER (SEQUENCE { INTEGER r, INTEGER s }), which is
+ * what pawaPay actually sends (Java's default; their examples start "MEQCI"/"MEUCI", i.e. 0x30 0x44/0x45). WebCrypto only verifies the raw form,
+ * so DER is converted; anything else is returned as it is and simply fails to verify.
+ */
+export function ecdsaRaw(sig: Uint8Array, size: number): Uint8Array {
+	if (sig.length === 2 * size || sig[0] !== 0x30) return sig;
+	let i = 2;
+	if (sig[1]! & 0x80) i += sig[1]! & 0x7f; // long-form length
+	const int = (): Uint8Array | null => {
+		if (sig[i] !== 0x02) return null;
+		const len = sig[i + 1]!;
+		let v = sig.subarray(i + 2, i + 2 + len);
+		i += 2 + len;
+		while (v.length > size && v[0] === 0) v = v.subarray(1); // a leading 0 keeps the INTEGER positive
+		return v.length <= size ? v : null;
+	};
+	const r = int(), s = int();
+	if (!r || !s || i !== sig.length) return sig;
+	const out = new Uint8Array(2 * size);
+	out.set(r, size - r.length);
+	out.set(s, 2 * size - s.length);
+	return out;
+}
+
+/** Why a callback was refused, or null when it verifies. Only the reason is logged; nothing secret is in it. */
+export async function callbackRejection(req: { method: string; url: URL; headers: Headers; body: string }, getKey: KeyFetcher, nowSeconds = Math.floor(Date.now() / 1000), toleranceSeconds = 300): Promise<string | null> {
 	const sigInput = req.headers.get('signature-input'), sigHeader = req.headers.get('signature');
-	if (!sigInput || !sigHeader) return false;
+	if (!sigInput || !sigHeader) return 'missing Signature or Signature-Input';
 	const p = parseSignatureInput(sigInput);
-	if (!p) return false;
+	if (!p) return 'unreadable Signature-Input';
 	// the body must be covered, or a valid signature could be reused with a different body
-	if (!p.components.includes('content-digest') || !p.components.includes('@method') || !p.components.includes('@path')) return false;
+	if (!p.components.includes('content-digest') || !p.components.includes('@method') || !p.components.includes('@path')) return 'signature does not cover method, path and digest';
 	const alg = ALGS[p.alg];
-	if (!alg) return false;
-	if (Math.abs(nowSeconds - p.created) > toleranceSeconds) return false; // replay protection
-	if (p.expires !== undefined && nowSeconds > p.expires + 60) return false;
-	if (!(await digestMatches(req.headers.get('content-digest'), req.body))) return false;
+	if (!alg) return `unsupported alg ${p.alg}`;
+	if (Math.abs(nowSeconds - p.created) > toleranceSeconds) return `stale or future signature (created ${p.created}, now ${nowSeconds})`; // replay protection
+	if (p.expires !== undefined && nowSeconds > p.expires + 60) return 'signature expired';
+	if (!(await digestMatches(req.headers.get('content-digest'), req.body))) return 'Content-Digest does not match the body';
 	const sm = new RegExp(`(?:^|,\\s*)${p.label}=:([A-Za-z0-9+/=]+):`).exec(sigHeader);
-	if (!sm) return false;
+	if (!sm) return 'no signature for the label';
 	const base = signatureBase(p, req);
-	const pem = base ? await getKey(p.keyid) : null;
-	if (!base || !pem) return false;
+	if (!base) return 'a covered component is missing';
+	const pem = await getKey(p.keyid);
+	if (!pem) return `no public key for keyid ${p.keyid}`;
 	try {
 		const key = await crypto.subtle.importKey('spki', pemToDer(pem), alg.import, false, ['verify']);
-		return await crypto.subtle.verify(alg.verify, key, b64(sm[1]!), new TextEncoder().encode(base));
-	} catch { return false; }
+		const size = alg.import.namedCurve === 'P-384' ? 48 : 32;
+		return (await crypto.subtle.verify(alg.verify, key, ecdsaRaw(b64(sm[1]!), size), new TextEncoder().encode(base))) ? null : 'signature does not verify';
+	} catch (e) { return `verification error: ${String(e)}`; }
+}
+
+export async function verifyCallback(req: { method: string; url: URL; headers: Headers; body: string }, getKey: KeyFetcher, nowSeconds = Math.floor(Date.now() / 1000), toleranceSeconds = 300): Promise<boolean> {
+	return (await callbackRejection(req, getKey, nowSeconds, toleranceSeconds)) === null;
 }

@@ -27,7 +27,7 @@
     // PI-SPI (BCEAO instant payments). Off unless PISPI_ENABLED is "true" and PI_SPI_ACCOUNT_ALIAS (secret) is set.
     "PISPI_ENABLED": "true",
     "PISPI_POLL": "true",
-    "PISPI_RTP": "false",
+    "PISPI_RTP": "true",
     "PISPI_COUNTRY": "CI",
     "PI_SPI_PARTICIPANT": "CIC999",
     "PI_SPI_BUSINESS_API_URL": "https://no-mtls.piz.simulateurs.pi-bceao.com",

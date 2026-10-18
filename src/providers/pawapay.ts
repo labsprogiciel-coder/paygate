@@ -1,4 +1,4 @@
-import { verifyCallback, type KeyFetcher } from './httpSig.ts';
+import { callbackRejection, type KeyFetcher } from './httpSig.ts';
 import { CHANNELS, COUNTRIES, parsePhone, providerCode } from './phone.ts';
 import { on, safeUrl } from '../util.ts';
 import type { CallbackEvent, Channel, ChannelOp, CollectInit, CollectProvider, CollectRequest, CollectStatus, DisburseOutcome, DisburseProvider, DisburseRequest, DisburseStatus, Method, WalletBalance } from './types.ts';
@@ -162,7 +162,7 @@ export function createPawapay(env: PawapayEnv, deps: PawapayDeps = {}): { channe
 	const publicKey: KeyFetcher = async (keyid) => {
 		const cached = await deps.cache?.get(`pawapay:key:${keyid}`);
 		if (cached) return cached;
-		const res = await doFetch(`${base}/v2/public-key/http`, { signal: AbortSignal.timeout(10_000) });
+		const res = await doFetch(`${base}/v2/public-key/http`, { headers: auth, signal: AbortSignal.timeout(10_000) }); // the endpoint wants the API token
 		if (!res.ok) return null;
 		const hit = ((await res.json()) as { id?: string; key?: string }[]).find((k) => k.id === keyid)?.key ?? null;
 		if (hit) await deps.cache?.put(`pawapay:key:${keyid}`, hit, { expirationTtl: 3600 });
@@ -285,7 +285,8 @@ export function createPawapay(env: PawapayEnv, deps: PawapayDeps = {}): { channe
 		// anything else: it would otherwise cost us an outbound status call for any anonymous caller.
 		if (!signed && live) { console.warn(JSON.stringify({ msg: 'pawapay.callback.unsigned_refused' })); return null; }
 		if (signed) {
-			if (!(await verifyCallback({ method: 'POST', url, headers, body }, publicKey))) return null;
+			const why = await callbackRejection({ method: 'POST', url, headers, body }, publicKey);
+			if (why) { console.warn(JSON.stringify({ msg: 'pawapay.callback.rejected', reason: why, path: url.pathname, signatureInput: headers.get('signature-input') })); return null; }
 			if (v.status === 'COMPLETED') return { direction, providerId, clientReference, state: 'completed' };
 			if (v.status === 'FAILED') return { direction, providerId, clientReference, state: 'failed', error: direction === 'collection' ? friendlyDepositFailure(v.failureReason?.failureCode) : friendlyPayoutFailure(v.failureReason?.failureCode) };
 			return { direction, providerId, clientReference, state: 'ignore' };
