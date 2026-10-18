@@ -106,11 +106,18 @@ td { white-space: nowrap; }
 /* overview */
 .sec { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 26px 0 10px; }
 .sec a { font-size: 13px; color: var(--accent); text-decoration: none; } .sec a:hover { text-decoration: underline; }
-.todo { display: grid; gap: 8px; }
-.todo-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--warn); }
-.todo-item.bad { border-left-color: var(--bad); } .todo-item strong { font-weight: 650; }
-.todo-item > .grow { flex: 1; min-width: 0; }
-.todo-why { color: var(--muted); font-size: 13px; margin-top: 2px; }
+/* what needs a person: toasts that stay until dismissed, newest concerns stacked in the corner */
+.notices { position: fixed; right: 18px; bottom: 18px; z-index: 35; display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); }
+.notices:empty { display: none; }
+.notice { display: flex; align-items: center; gap: 10px; padding: 12px 10px 12px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--warn); box-shadow: 0 8px 24px rgb(0 0 0 / 14%); animation: notice-in .18s ease-out; }
+.notice.bad { border-left-color: var(--bad); }
+.notice > .grow { flex: 1; min-width: 0; } .notice strong { font-weight: 650; }
+.notice-why { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.notice-x { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.notice-x:hover { color: var(--ink); background: var(--bg); }
+@keyframes notice-in { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .notice { animation: none; } }
+@media (max-width: 640px) { .notices { left: 16px; right: 16px; width: auto; } }
 a.btn { text-decoration: none; display: inline-block; color: var(--ink); }
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
 .tile { padding: 16px 18px; border-right: 1px solid var(--line); min-width: 0; } .tile:last-child { border-right: 0; }
