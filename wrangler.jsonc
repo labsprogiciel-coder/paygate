@@ -58,9 +58,11 @@
       "PI_SP_API_OAUTH_URL": ""
     }
   },
+  // the deployed version, so Sentry can tell which release an error came from
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "kv_namespaces": [
     { "binding": "CACHE", "id": "a65d284118964b7782cc2d58132d4863" }
   ]
-  // Secrets (wrangler secret put): ADMIN_API_KEY, CLERK_SECRET_KEY, CLERK_JWT_KEY, WEBHOOK_MASTER_SECRET, PAWAPAY_API_TOKEN,
+  // Secrets (wrangler secret put): ADMIN_API_KEY, SENTRY_DSN, CLERK_SECRET_KEY, CLERK_JWT_KEY, WEBHOOK_MASTER_SECRET, PAWAPAY_API_TOKEN,
   // PI_SP_API_CLIENT_ID, PI_SP_API_CLIENT_SECRET, PI_SPI_API_KEY, PI_SPI_ACCOUNT_ALIAS, ALERT_WEBHOOK_URL
 }

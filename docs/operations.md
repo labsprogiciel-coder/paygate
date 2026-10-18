@@ -25,6 +25,16 @@ Optional; without it the console asks for `ADMIN_API_KEY`. With it, operators si
 
 PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`. Reading and sending are separate switches.
 
+### Error reporting with Sentry
+
+Optional; off until the secret is set. `npx wrangler secret put SENTRY_DSN` with the DSN of a Sentry project (Settings → Projects → Client Keys). Then:
+
+- **What is sent:** unexpected errors (a request answered 500, a cron step that failed) tagged with where they happened (`where`, `method`, `path` with ids replaced by `:id`, or the cron `step`); and every critical or warning operator alert (unknown payout, wallet that cannot cover payouts, undeliverable webhook...) as a Sentry message, grouped by its title.
+- **What is never sent:** request or response bodies, cookies, query strings, auth and signature headers. API keys, webhook secrets, bearer tokens and phone numbers are masked wherever they appear.
+- Each event carries the Worker version as its release, and the environment `production` (with `LIVE=true`) or `sandbox-<mode>`.
+- Branch previews have no secrets, so they never report.
+- Errors only: no performance tracing.
+
 ## Add a product
 
 ```bash

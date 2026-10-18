@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/cloudflare';
 import { adminApi } from './admin.ts';
 import { clerkEnabled, clerkFrontendApi } from './auth.ts';
 import { handleProviderCallback } from './callbacks.ts';
@@ -12,6 +13,7 @@ import { reconcile } from './reconcile.ts';
 import { authenticate, type Tenant } from './tenants.ts';
 import { deliverDue, queuePing } from './webhooks.ts';
 import { log, on } from './util.ts';
+import { reportError, sentryOptions } from './sentry.ts';
 
 const MAX_JSON_BYTES = 16 * 1024;
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -127,20 +129,21 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 	} catch (e) {
 		if (e instanceof ApiError) return json({ error: { code: e.code, message: e.message, ...e.extra } }, e.status);
 		console.error(JSON.stringify({ msg: 'request.failed', path, error: e instanceof Error ? e.message : String(e) }));
+		reportError(e, { where: 'request', method: request.method, path: path.replace(/\/(pg[0-9a-f]{18}|[A-Za-z0-9_-]{20,})(?=\/|$)/g, '/:id') });
 		return json({ error: { code: 'internal', message: 'Something went wrong on our side' } }, 500);
 	}
 }
 
-export default {
+export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 	fetch: handle,
 
 	/** Every minute: deliver webhooks, settle what the callbacks missed. Every fifth minute: check the float. Each step fails alone. */
 	async scheduled(controller: ScheduledController, env: Env): Promise<void> {
-		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); } };
+		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); reportError(e, { where: 'cron', step: name }); } };
 		const providers = getProviders(env);
 		await run('webhooks', () => deliverDue(env));
 		await run('reconcile', () => reconcile(env, providers));
 		if (new Date(controller.scheduledTime).getUTCMinutes() % 5 === 0) await run('float', () => checkFloat(env, providers));
 		log('cron.done', {});
 	},
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env>);

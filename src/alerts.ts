@@ -2,8 +2,10 @@
  * Operational alerts for things a person must look at: a payout with an unknown outcome, a payment that arrived for the wrong amount, a webhook that
  * could not be delivered, a wallet running dry. Always written to the Worker log as an `alert` line; also POSTed to ALERT_WEBHOOK_URL when set (the
  * body carries both `text` for Slack and `content` for Discord). An alert can never break the operation that raised it: failures are logged and swallowed.
- * No customer data goes out: payment ids, tenants, amounts and codes only.
+ * Critical and warning alerts also go to Sentry when it is on (grouped by title). No customer data goes out: payment ids, tenants, amounts and codes only.
  */
+import { reportAlert } from './sentry.ts';
+
 export type AlertLevel = 'critical' | 'warning' | 'info';
 export interface AlertInput { level: AlertLevel; title: string; details?: Record<string, string | number | boolean | null | undefined> }
 
@@ -17,6 +19,7 @@ export function formatAlert(a: AlertInput): string {
 export async function alert(env: Env, a: AlertInput): Promise<void> {
 	const text = formatAlert(a);
 	console.error(JSON.stringify({ msg: 'alert', level: a.level, title: a.title, ...a.details }));
+	try { reportAlert(a.level, a.title, a.details ?? {}); } catch { /* an alert never breaks what raised it */ }
 	const url = env.ALERT_WEBHOOK_URL;
 	if (!url) return;
 	try {
