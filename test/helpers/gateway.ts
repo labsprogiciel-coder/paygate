@@ -52,7 +52,20 @@ export async function signer() {
 	return { kp, pem };
 }
 
-export async function signedCallbackRequest(body: string, kp: CryptoKeyPair, path: string, over: { created?: number; host?: string } = {}) {
+/** Raw r‖s (what WebCrypto produces) to ASN.1 DER (what pawaPay sends). */
+export function derSignature(raw: Uint8Array): Uint8Array {
+	const int = (v: Uint8Array) => {
+		let i = 0;
+		while (i < v.length - 1 && v[i] === 0) i++;
+		const t = v.subarray(i);
+		return t[0]! & 0x80 ? [0x02, t.length + 1, 0, ...t] : [0x02, t.length, ...t];
+	};
+	const half = raw.length / 2, body = [...int(raw.subarray(0, half)), ...int(raw.subarray(half))];
+	return new Uint8Array([0x30, body.length, ...body]);
+}
+
+/** A callback signed as pawaPay signs it: DER-encoded ECDSA by default, raw r‖s with `raw: true`. */
+export async function signedCallbackRequest(body: string, kp: CryptoKeyPair, path: string, over: { created?: number; host?: string; raw?: boolean } = {}) {
 	const created = over.created ?? Math.floor(Date.now() / 1000);
 	const host = over.host ?? 'gw.test';
 	const digest = `sha-512=:${B64(new Uint8Array(await crypto.subtle.digest('SHA-512', new TextEncoder().encode(body))))}:`;
@@ -61,7 +74,8 @@ export async function signedCallbackRequest(body: string, kp: CryptoKeyPair, pat
 	const date = '2026-10-03T10:00:00.123456Z';
 	const lines: Record<string, string> = { '"@method"': 'POST', '"@authority"': host, '"@path"': path, '"signature-date"': date, '"content-digest"': digest, '"content-type"': 'application/json; charset=UTF-8' };
 	const base = [...covered.matchAll(/"[^"]+"/g)].map((c) => `${c[0]}: ${lines[c[0]]}`).concat(`"@signature-params": ${params}`).join('\n');
-	const sig = B64(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, new TextEncoder().encode(base))));
+	const raw = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, kp.privateKey, new TextEncoder().encode(base)));
+	const sig = B64(over.raw ? raw : derSignature(raw));
 	return new Request(`https://${host}${path}`, {
 		method: 'POST', body,
 		headers: { signature: `sig-pp=:${sig}:`, 'signature-input': `sig-pp=${params}`, 'signature-date': date, 'content-digest': digest, 'content-type': 'application/json; charset=UTF-8' },
@@ -77,7 +91,7 @@ export function pawapayStub(state: PawapayState = {}) {
 		const u = new URL(c.url);
 		if (u.host !== 'api.sandbox.pawapay.io' && u.host !== 'api.pawapay.io') return undefined;
 		if (u.pathname === '/v2/active-conf') return ok(conf(u.searchParams.get('operationType') ?? 'DEPOSIT'));
-		if (u.pathname === '/v2/public-key/http') return ok(state.pem ? [{ id: 'HTTP_EC_P256_KEY:1', key: state.pem }] : []);
+		if (u.pathname === '/v2/public-key/http') return !c.headers.authorization?.startsWith('Bearer ') ? new Response('{"errorMessage":"Unauthorized"}', { status: 401 }) : ok(state.pem ? [{ id: 'HTTP_EC_P256_KEY:1', key: state.pem }] : []);
 		if (u.pathname === '/v2/wallet-balances') return ok(state.balances ?? { balances: [] });
 		if (u.pathname === '/v2/deposits' && c.method === 'POST') return state.depositAnswer?.() ?? ok({ status: 'ACCEPTED' });
 		if (u.pathname === '/v2/payouts' && c.method === 'POST') return state.payoutAnswer?.() ?? ok({ status: 'ACCEPTED' });
