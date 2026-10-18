@@ -266,7 +266,7 @@ const tile = (label, value, sub, cls) => h('div', { class: `tile${cls ? ' ' + cl
 
 async function overview(main) {
 	const [flt, prov, att, recent, feed] = await Promise.all([api('GET', '/admin/float'), api('GET', '/admin/providers'), api('GET', '/admin/attention'),
-		api('GET', '/admin/payments?limit=8'), api('GET', '/admin/events?limit=12')]);
+		api('GET', '/admin/payments?limit=10'), api('GET', '/admin/events?limit=10')]);
 
 	// what needs a person, most serious first, as toasts; wallets below the floor are grouped so three countries make one toast, not three
 	const todo = [];
