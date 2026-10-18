@@ -61,6 +61,32 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		if (m === 'GET') return json({ secret: await webhookSecret(env, t), version: t.webhook_version });
 		if (m === 'POST') return json(await rotateWebhookSecret(env, t.id)); // rotate
 	}
+	if (path === '/admin/payments/stats' && m === 'GET') {
+		// the payments page's headline numbers, for the same tenant and direction filters (not status: these ARE the breakdown by status).
+		// Settled figures cover the last 24 hours; what is still open (processing, unknown) counts whatever its age, since it all still needs to end.
+		const where: string[] = [], binds: unknown[] = [];
+		for (const [param, col] of [['tenant', 'tenant_id'], ['kind', 'kind']] as const) { const v = url.searchParams.get(param); if (v) { where.push(`${col} = ?`); binds.push(v); } }
+		const since = Date.now() - 86_400_000;
+		const r = await env.DB.prepare(`SELECT
+			COUNT(CASE WHEN status = 'completed' AND created_at >= ?1 THEN 1 END) AS completed_n,
+			COALESCE(SUM(CASE WHEN status = 'completed' AND created_at >= ?1 THEN amount END), 0) AS completed_amount,
+			COUNT(CASE WHEN status IN ('completed', 'failed', 'expired') AND created_at >= ?1 THEN 1 END) AS settled_n,
+			COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_n,
+			COALESCE(SUM(CASE WHEN status = 'processing' THEN amount END), 0) AS processing_amount,
+			COUNT(CASE WHEN status = 'unknown' THEN 1 END) AS unknown_n,
+			COALESCE(SUM(CASE WHEN status = 'unknown' THEN amount END), 0) AS unknown_amount
+			FROM payments ${where.length ? 'WHERE ' + where.map((w, i) => w.replace('?', `?${i + 2}`)).join(' AND ') : ''}`).bind(since, ...binds)
+			.first<Record<string, number>>();
+		const n = (k: string) => Number(r?.[k] ?? 0);
+		return json({
+			since,
+			completed: { n: n('completed_n'), amount: n('completed_amount') },
+			settled: n('settled_n'),
+			successRate: n('settled_n') ? Math.round((n('completed_n') / n('settled_n')) * 100) : null,
+			processing: { n: n('processing_n'), amount: n('processing_amount') },
+			unknown: { n: n('unknown_n'), amount: n('unknown_amount') },
+		});
+	}
 	if (path === '/admin/payments' && m === 'GET') {
 		// newest first, a page at a time: `before` is the last row's `<createdAt>:<id>` (the response's `next`), so rows sharing a timestamp are never skipped
 		const where: string[] = [], binds: unknown[] = [];

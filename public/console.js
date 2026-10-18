@@ -195,7 +195,7 @@ const SKELETON = {
 	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
 	providers: () => [skHead(), ...[0, 1].map((i) => busy(h('section', { class: 'psp' }, h('header', { class: 'psp-head' }, h('span', { class: 'sk sk-sq' }), h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))),
 		h('div', { class: 'psp-body' }, h('div', { class: 'panel' }, Array.from({ length: 5 }, (_, r) => bar(r + i, 'sk-l'))), h('div', { class: 'panel' }, Array.from({ length: 3 }, (_, r) => bar(r + i + 2, 'sk-l')))))))],
-	payments: () => [skHead(), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
+	payments: () => [skHead(), h('div', { class: 'mb20' }, skTiles()), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
 	events: () => [skHead(), skFeed(10)],
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
 };
@@ -425,8 +425,21 @@ async function payments(main) {
 		fetch: (before, size) => { const p = filters(); p.set('limit', size); if (before) p.set('before', before); return api('GET', `/admin/payments?${p}`) },
 		render: (rows) => paymentsTable(rows),
 		skeleton: (n) => skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], n) });
-	const load = list.reset;
-	put(main, head('Payments', null, h('button', { class: 'btn', onclick: list.refresh }, 'Refresh')), h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), list.el);
+	// headline numbers for the same tenant and direction (not status: the tiles are the breakdown by status)
+	const kpis = h('div', { class: 'mb20' }, skTiles());
+	const loadKpis = async () => {
+		const p = new URLSearchParams(); if (kind.value) p.set('kind', kind.value); if (tenant.value.trim()) p.set('tenant', tenant.value.trim());
+		try {
+			const k = await api('GET', `/admin/payments/stats?${p}`);
+			put(kpis, h('div', { class: 'tiles' },
+				tile('Completed (24 h)', `${compact(k.completed.amount)} FCFA`, plural(k.completed.n, 'payment')),
+				tile('Success rate (24 h)', k.successRate === null ? '–' : `${k.successRate}%`, k.settled ? `${k.completed.n} of ${k.settled} finished` : 'nothing finished yet'),
+				tile('In progress', String(k.processing.n), k.processing.n ? `${fmtAmount(k.processing.amount)} waiting` : 'nothing open'),
+				tile('Needs a person', String(k.unknown.n), k.unknown.n ? `${fmtAmount(k.unknown.amount)} with an unknown outcome` : 'no unknown payouts', k.unknown.n ? 'bad' : null)));
+		} catch (e) { if (e instanceof AuthError || e instanceof NotOperator) throw e; put(kpis); }
+	};
+	const load = () => Promise.all([list.reset(), loadKpis()]);
+	put(main, head('Payments', null, h('button', { class: 'btn', onclick: () => { list.refresh(); loadKpis(); } }, 'Refresh')), kpis, h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), list.el);
 	await load();
 }
 async function paymentDrawer(id) {
