@@ -28,7 +28,7 @@
     "PISPI_ENABLED": "true",
     "PISPI_POLL": "true",
     "PISPI_RTP": "false",
-    "PISPI_COUNTRY": "BF",
+    "PISPI_COUNTRY": "CI",
     "PI_SPI_PARTICIPANT": "CIC999",
     "PI_SPI_BUSINESS_API_URL": "https://no-mtls.piz.simulateurs.pi-bceao.com",
     "PI_SP_API_OAUTH_URL": "https://piz-simulateur-business-sandbox.auth.eu-west-1.amazoncognito.com/oauth2/token"
@@ -36,6 +36,28 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "paygate", "database_id": "122de81e-aef6-484a-a6d2-17ca34d5ce78", "migrations_dir": "migrations" }
   ],
+  // Branch previews (Cloudflare Workers Builds runs `wrangler preview` on every PR). They must never touch production money or data:
+  // simulated providers, PI-SPI off, not live, no Clerk (its sessions are tied to the production origin), and NO D1/KV bindings, so a
+  // preview cannot read or write the production ledger. A preview serves the console and /health; anything needing the database errors.
+  // To make previews fully usable, give them their own preview D1 database and KV namespace here (and apply the migrations to that D1).
+  "previews": {
+    "vars": {
+      "LIVE": "false",
+      "PROVIDER_MODE": "sandbox",
+      "PAWAPAY_BASE_URL": "https://api.sandbox.pawapay.io",
+      "DEFAULT_MAX_AMOUNT": "2000000",
+      "FLOAT_FLOOR_XOF": "2000000",
+      "CLERK_PUBLISHABLE_KEY": "",
+      "CLERK_OPERATOR_IDS": "",
+      "PISPI_ENABLED": "false",
+      "PISPI_POLL": "false",
+      "PISPI_RTP": "false",
+      "PISPI_COUNTRY": "CI",
+      "PI_SPI_PARTICIPANT": "",
+      "PI_SPI_BUSINESS_API_URL": "",
+      "PI_SP_API_OAUTH_URL": ""
+    }
+  },
   "kv_namespaces": [
     { "binding": "CACHE", "id": "a65d284118964b7782cc2d58132d4863" }
   ]
