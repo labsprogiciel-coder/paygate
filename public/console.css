@@ -19,7 +19,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav a[aria-current="page"] { background: var(--ink); color: var(--bg); }
 .nav .count { background: var(--bad); color: #fff; border-radius: 99px; font-size: 11px; padding: 0 7px; min-width: 18px; text-align: center; }
 .side .spacer { flex: 1; }
-.main { padding: 28px 32px 64px; max-width: 1180px; width: 100%; }
+.main { padding: 28px 32px 64px; max-width: 1600px; width: 100%; margin: 0 auto; } /* uses a wide screen, centred in the space beside the sidebar */
 h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; letter-spacing: -.01em; }
 h2 { font-size: 14px; font-weight: 650; margin: 0 0 10px; }
 .sub { color: var(--muted); margin: 0 0 22px; }
@@ -79,7 +79,7 @@ pre { background: var(--idle-bg); padding: 10px 12px; border-radius: 8px; overfl
 .mb6 { margin-bottom: 6px; } .mb16 { margin-bottom: 16px; } .mb20 { margin-bottom: 20px; } .ml8 { margin-left: 8px; } .bad-text { color: var(--bad); }
 .sub.m0 { margin: 0; }
 td { white-space: nowrap; }
-.psp { background: var(--idle-bg); color: var(--ink); } .psp-pawapay { background: var(--info-bg); color: var(--info); } .psp-pispi { background: var(--ok-bg); color: var(--ok); }
+.pspb { background: var(--idle-bg); color: var(--ink); } .pspb.psp-pawapay { background: var(--info-bg); color: var(--info); } .pspb.psp-pispi { background: var(--ok-bg); color: var(--ok); }
 .logo { width: 20px; height: 20px; border-radius: 5px; object-fit: cover; flex: none; } .chan { display: inline-flex; align-items: center; gap: 7px; } .chans { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .flag { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex: none; }
 .pgrid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
