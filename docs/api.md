@@ -126,6 +126,10 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `DELETE /admin/tenants/{id}/keys/{keyId}` | revoke |
 | `GET /admin/tenants/{id}/webhook-secret` | the secret your product verifies with; `POST` rotates it |
 | `GET /admin/payments?status=&tenant=&kind=&limit=&before=` | with the detail tenants never see; newest first, `limit` 1–100 (default 50). Returns `{ data, total, next }`: pass `next` as `before` for the next page |
+| `GET /admin/ledger` | the books: per pool (`CIV`, `SEN`, `BFA`, `PISPI`) each tenant's `available` and `held`, `unallocated`, `total`, the provider `wallet`, `difference` (wallet − total), and `formance` (its total, when set up); plus the `outbox` (`pending`, `stuck`) |
+| `POST /admin/ledger/backfill` | books every payment's missing postings (idempotent) → `{ payments, added }` |
+| `POST /admin/ledger/retry` | gives postings stuck on their way to Formance (10 failed tries) their tries back → `{ reset }` |
+| `POST /admin/ledger/adjustments` | `{ pool, amount, note }`: money owned by no product, positive for float put in, negative for fees or losses taken out |
 | `GET /admin/payments/stats?tenant=&kind=` | the payments page's headline: `completed` `{ n, amount }`, `settled` and `successRate` for the last 24 h; `processing` and `unknown` `{ n, amount }` for everything still open, whatever its age |
 | `GET /admin/payments/{id}` | with its full history |
 | `POST /admin/payments/{id}/resolve` | `{ outcome: "completed" \| "failed", note }` for an `unknown` payout or a manually confirmed PI-SPI payment |

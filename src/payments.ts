@@ -6,6 +6,7 @@ import { judge, PAYER_ALIAS, pispiAlias, pispiEnabled, pispiPollEnabled, pispiQr
 import type { Providers, Rail } from './providers/types.ts';
 import { decide, isOpen, NOT_FOUND_DETAIL, NOT_FOUND_GRACE_MS, PISPI_LATE_MS, RECHECK_FAILED_FOR_MS, type Observed, type Status } from './states.ts';
 import type { Tenant } from './tenants.ts';
+import { syncLedger } from './ledger.ts';
 import { canonical, log, newId, on, safeUrl, sha256Hex } from './util.ts';
 
 export interface PaymentRow {
@@ -85,6 +86,7 @@ export async function applyObserved(env: Env, row: PaymentRow, obs: Observed, ac
 	]);
 	if (!results[0]!.meta.changes) return { applied: false, row: (await getRow(env, row.id)) ?? row }; // someone else moved it first
 	log('payment.transition', { id: row.id, tenant: row.tenant_id, kind: row.kind, from: row.status, to: d.to, actor });
+	await syncLedger(env, next, now);
 	await notifyOperator(env, next, row.status, d, obs);
 	return { applied: true, row: next };
 }
@@ -271,11 +273,13 @@ async function startCollection(env: Env, row: PaymentRow, n: Normalised, provide
 export async function startDisbursement(env: Env, row: PaymentRow, providers: Providers, now = Date.now()): Promise<PaymentRow> {
 	const claim = await env.DB.prepare(`UPDATE payments SET attempts = 1, updated_at = ? WHERE id = ? AND attempts = 0 AND status = 'processing'`).bind(now, row.id).run();
 	if (!claim.meta.changes) return (await getRow(env, row.id)) ?? row;
+	row = { ...row, attempts: 1, updated_at: now }; // as the database now has it: what follows (and the books) see it was sent
 	try {
 		const out = await providers.disburse.send({ providerId: row.provider_id!, paymentId: row.id, amount: row.amount, phone: row.counterparty, operator: row.operator! });
 		if (out.state === 'completed') return (await applyObserved(env, row, { state: 'completed' }, 'provider', now)).row;
 		if (out.state === 'failed') return (await applyObserved(env, row, { state: 'failed', error: out.error, detail: out.detail }, 'provider', now)).row;
 		await event(env, row.id, 'accepted', 'provider', null, now); // pending: the callback or the recheck settles it
+		await syncLedger(env, (await getRow(env, row.id)) ?? row, now); // the money is committed: hold it in the books (as it is now: its callback may already have settled it)
 	} catch (e) {
 		// Unknown outcome: money may have moved. Left for the status check and then a person; NEVER retried automatically.
 		return (await applyObserved(env, row, { state: 'unknown', detail: `UNKNOWN OUTCOME: ${e instanceof Error ? e.message : String(e)}` }, 'provider', now)).row;

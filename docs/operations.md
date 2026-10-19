@@ -35,6 +35,23 @@ Optional; off until the secret is set. `npx wrangler secret put SENTRY_DSN` with
 - Branch previews have no secrets, so they never report.
 - Errors only: no performance tracing.
 
+### The books (Formance ledger)
+
+Every money movement is also booked as a double-entry posting in `ledger_postings` (migration 0003), so the gateway always knows **whose money is in each shared wallet**. A completed collection credits its product, a payout that was sent is held, then paid out or released. Accounts per pool (a pawaPay country, or `PISPI` for the bank account):
+
+| Account | Meaning |
+|---|---|
+| `tenants:{tenant}:{pool}:available` | what a product owns in the pool (tenant dashes become underscores) |
+| `tenants:{tenant}:{pool}:held` | payouts sent and not final (processing or unknown) |
+| `pool:{pool}:unallocated` | float the studio put in, or fees taken out, owned by no product |
+| `world` | outside: customers, recipients, the studio's top-ups |
+
+- **Copy to Formance (optional).** Set the var or secret `FORMANCE_URL` (the stack, e.g. `https://<org>-<stack>.<region>.formance.cloud`) and the secrets `FORMANCE_CLIENT_ID` / `FORMANCE_CLIENT_SECRET`. Optional: `FORMANCE_LEDGER` (default `paygate`, created on first use) and `FORMANCE_TOKEN_URL` (default `/api/auth/oauth/token`). The cron sends unposted postings every minute; each posting's reference is the Formance reference, so a retry never books twice. If Formance is down, payments are untouched and postings wait.
+- **Records, does not refuse (yet).** Every script allows an overdraft, so a product paying out more than it collected shows a **negative** balance instead of being refused. Enforcing it (Formance refusing the hold) is the next step, once the books have run clean.
+- **First run:** after `npm run db:migrate`, open Providers → Books → **Rebuild from payments** to book the history. Then book the studio's float as an adjustment (**Book an adjustment…**, e.g. "opening float", positive), so each wallet's difference comes to zero. Book provider fees the same way (negative). An adjustment can't be edited: book the opposite to undo one.
+- **Formance refusing us** (401, 403, 429, 5xx) stops the sweep until the next minute, so postings don't lose their tries; a 401 fetches a new token. A posting that still fails 10 times is left for a person: fix the access, then Providers → Books → **Retry stuck postings**.
+- **Every day at 03:00 UTC** the cron alerts when a wallet and its books differ, when postings are stuck on their way to Formance (after 10 tries), or when Formance and the journal disagree.
+
 ## Add a product
 
 ```bash
@@ -68,6 +85,7 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 1. Delivers due webhooks.
 2. Asks the provider about open payments not looked at for a minute; sends a disbursement that was recorded but never sent; looks again, hourly, at failed or expired payments of the last day (a week for PI-SPI) in case they completed late.
 3. Every fifth minute: checks the wallets (alerts at most once per 12 hours per country and level).
+4. Copies new ledger postings to Formance, if it is set up. At 03:00 UTC: checks the books against the wallets and Formance.
 
 ## Runbook
 
