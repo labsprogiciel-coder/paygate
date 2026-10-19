@@ -4,6 +4,7 @@ import { clerkEnabled, clerkFrontendApi } from './auth.ts';
 import { handleProviderCallback } from './callbacks.ts';
 import { ApiError } from './errors.ts';
 import { checkFloat, loadFloat } from './float.ts';
+import { checkBooks, postPending } from './ledger.ts';
 import type { Kind } from './ids.ts';
 import { createPayment, getRowFor, history, listPayments, refresh, view } from './payments.ts';
 import { pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
@@ -137,13 +138,16 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 	fetch: handle,
 
-	/** Every minute: deliver webhooks, settle what the callbacks missed. Every fifth minute: check the float. Each step fails alone. */
+	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. Each step fails alone. */
 	async scheduled(controller: ScheduledController, env: Env): Promise<void> {
 		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); reportError(e, { where: 'cron', step: name }); } };
 		const providers = getProviders(env);
 		await run('webhooks', () => deliverDue(env));
 		await run('reconcile', () => reconcile(env, providers));
 		if (new Date(controller.scheduledTime).getUTCMinutes() % 5 === 0) await run('float', () => checkFloat(env, providers));
+		await run('ledger', () => postPending(env));
+		const at = new Date(controller.scheduledTime);
+		if (at.getUTCHours() === 3 && at.getUTCMinutes() === 0) await run('books', () => checkBooks(env, providers));
 		log('cron.done', {});
 	},
 } satisfies ExportedHandler<Env>);

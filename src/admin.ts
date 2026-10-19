@@ -6,6 +6,7 @@ import { listDead, retryDelivery } from './webhooks.ts';
 import { resolvePayment } from './reconcile.ts';
 import { loadFloat } from './float.ts';
 import { attention, eventFeed, SOURCES, type Source } from './events.ts';
+import { adjustPool, backfillLedger, booksReport } from './ledger.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
 import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
@@ -60,6 +61,15 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		if (!t) throw new ApiError(404, 'not_found', 'No such tenant');
 		if (m === 'GET') return json({ secret: await webhookSecret(env, t), version: t.webhook_version });
 		if (m === 'POST') return json(await rotateWebhookSecret(env, t.id)); // rotate
+	}
+	if (path === '/admin/ledger' && m === 'GET') return json(await booksReport(env, providers));
+	if (path === '/admin/ledger/backfill' && m === 'POST') return json(await backfillLedger(env));
+	if (path === '/admin/ledger/adjustments' && m === 'POST') {
+		const b = await body(request);
+		if (typeof b.pool !== 'string' || !/^(CIV|SEN|BFA|PISPI)$/.test(b.pool)) throw new ApiError(400, 'invalid_pool', 'pool is CIV, SEN, BFA or PISPI');
+		if (typeof b.amount !== 'number' || !Number.isInteger(b.amount) || b.amount === 0 || Math.abs(b.amount) > 1_000_000_000) throw new ApiError(400, 'invalid_amount', 'amount is a whole number of XOF, positive for float put in, negative for fees or losses taken out');
+		if (typeof b.note !== 'string' || !b.note.trim()) throw new ApiError(400, 'invalid_note', 'note is required: say what the money is');
+		return json(await adjustPool(env, b.pool, b.amount, b.note.trim(), admin), 201);
 	}
 	if (path === '/admin/payments/stats' && m === 'GET') {
 		// the payments page's headline numbers, for the same tenant and direction filters (not status: these ARE the breakdown by status).

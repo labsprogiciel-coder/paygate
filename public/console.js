@@ -346,9 +346,50 @@ const flag = (iso3) => COUNTRY[iso3] ? h('img', { class: 'flag', src: `/country/
 const ENV = { Live: 's-completed', Sandbox: 's-low', Simulated: 's-low', Simulator: 's-low', Off: 's-idle' };
 
 async function providersPage(main) {
-	const prov = await api('GET', '/admin/providers');
+	const [prov, books] = await Promise.all([api('GET', '/admin/providers'), api('GET', '/admin/ledger').catch((e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; })]);
 	put(main, head('Providers', 'Every payment provider the gateway uses: what each channel can do on the account right now, and the accounts money is paid from. Figures are for the last 24 hours.', h('button', { class: 'btn', onclick: route }, 'Refresh')),
-		prov.data.map((p) => pspSection(p, prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi'))), prov.floor)));
+		prov.data.map((p) => pspSection(p, prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi'))), prov.floor)),
+		books ? booksSection(books) : null);
+}
+
+// ---- books ----------------------------------------------------------------------------------------------------------------------
+// Who owns the money in each wallet: the journal per product, beside what the wallet really holds and what Formance has.
+const POOL_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso', PISPI: 'PI-SPI bank account' };
+const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
+function booksSection(b) {
+	const o = b.outbox;
+	const status = !b.enabled ? 'Kept in the gateway only: set FORMANCE_URL to copy it to a Formance ledger.'
+		: b.formanceError ? `Formance could not be read: ${b.formanceError}`
+		: o.stuck ? `${plural(o.stuck, 'posting')} stuck on the way to Formance (ledger ${b.ledger}).`
+		: o.pending ? `${plural(o.pending, 'posting')} waiting for Formance (ledger ${b.ledger}).` : `Copied to Formance (ledger ${b.ledger}), nothing waiting.`;
+	const rows = b.pools.map((p) => h('tr', {},
+		h('td', {}, h('strong', {}, p.pool), h('div', { class: 'muted small' }, POOL_NAME[p.pool] || '')),
+		h('td', {}, p.tenants.length ? h('div', { class: 'book-tenants' }, p.tenants.map((t) => h('div', { class: 'chan' }, tenantChip(t.tenant), h('span', { class: `num${t.available < 0 ? ' bad-text' : ''}` }, fmtAmount(t.available)), t.held ? h('span', { class: 'muted small' }, `${fmtAmount(t.held)} held`) : null))) : h('span', { class: 'muted' }, 'nothing booked')),
+		h('td', { class: 'num' }, fmtAmount(p.unallocated)),
+		h('td', { class: 'num strong' }, fmtAmount(p.total)),
+		h('td', { class: 'num' }, p.wallet == null ? '–' : fmtAmount(p.wallet)),
+		h('td', { class: `num${p.difference ? ' bad-text' : ''}` }, p.difference == null ? '–' : p.difference === 0 ? 'balanced' : signed(p.difference)),
+		b.enabled ? h('td', { class: `num${p.formance != null && p.formance !== p.total ? ' bad-text' : ''}` }, p.formance == null ? '–' : fmtAmount(p.formance)) : null));
+	return h('section', { class: 'books mt22' },
+		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
+			h('button', { class: 'btn', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
+			h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; try { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); } catch (x) { e.target.disabled = false; toast(x.message) } } }, 'Rebuild from payments')),
+		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status),
+		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
+			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
+}
+function adjustModal(pools) {
+	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
+	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), amount: h('input', { type: 'number', step: 1, placeholder: 'e.g. 500000 or -1200' }), note: h('input', { maxlength: 200, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const err = h('div');
+	const m = overlay([h('h2', {}, 'Book an adjustment'), h('p', { class: 'muted' }, 'Money in a wallet that belongs to no product: positive for float the studio put in, negative for fees or losses taken out. It cannot be edited later; book the opposite to undo it.'),
+		field('Pool', f.pool), field('Amount', f.amount, '(FCFA)'), field('What is it', f.note), err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: async (e) => {
+			e.target.disabled = true;
+			try { await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route(); }
+			catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
+		} }, 'Book it'))], { center: true });
+	f.amount.focus();
 }
 
 function pspSection(p, rows, floor) {
@@ -575,11 +616,13 @@ async function connectModal(id) {
 async function tenantDrawer(id) {
 	const d = overlay(skDrawer());
 	const render = async () => {
-		const [t, keys] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`)]);
+		const [t, keys, books] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null)]);
+		const owns = (books?.pools || []).flatMap((p) => p.tenants.filter((x) => x.tenant === id).map((x) => ({ pool: p.pool, ...x })));
 		put(d.box, 
 			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			h('div', { class: 'card' }, h('dl', { class: 'kv' }, h('dt', {}, 'Id'), h('dd', { class: 'mono' }, t.id), h('dt', {}, 'Webhook'), h('dd', { class: 'mono' }, t.webhook_url || '–'), h('dt', {}, 'Max payment'), h('dd', {}, t.max_amount ? fmtAmount(t.max_amount) : 'gateway default'),
-				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)))),
+				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)),
+				books ? [h('dt', {}, 'Holds'), h('dd', {}, owns.length ? owns.map((x) => h('div', {}, h('strong', { class: x.available < 0 ? 'bad-text' : null }, fmtAmount(x.available)), ` in ${x.pool}`, x.held ? h('span', { class: 'muted' }, ` · ${fmtAmount(x.held)} held`) : null)) : h('span', { class: 'muted' }, 'nothing yet'))] : null)),
 			h('div', { class: 'actions left mb20' },
 				h('button', { class: 'btn', onclick: () => tenantForm(t) }, 'Edit'),
 				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: () => {
