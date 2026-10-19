@@ -6,7 +6,7 @@ import { listDead, retryDelivery } from './webhooks.ts';
 import { resolvePayment } from './reconcile.ts';
 import { loadFloat } from './float.ts';
 import { attention, eventFeed, SOURCES, type Source } from './events.ts';
-import { adjustPool, backfillLedger, booksReport } from './ledger.ts';
+import { adjustPool, backfillLedger, booksReport, retryStuck } from './ledger.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
 import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
@@ -64,6 +64,7 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 	}
 	if (path === '/admin/ledger' && m === 'GET') return json(await booksReport(env, providers));
 	if (path === '/admin/ledger/backfill' && m === 'POST') return json(await backfillLedger(env));
+	if (path === '/admin/ledger/retry' && m === 'POST') return json(await retryStuck(env));
 	if (path === '/admin/ledger/adjustments' && m === 'POST') {
 		const b = await body(request);
 		if (typeof b.pool !== 'string' || !/^(CIV|SEN|BFA|PISPI)$/.test(b.pool)) throw new ApiError(400, 'invalid_pool', 'pool is CIV, SEN, BFA or PISPI');

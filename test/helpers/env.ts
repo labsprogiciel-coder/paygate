@@ -18,6 +18,7 @@ class Statement {
 	constructor(db: DatabaseSync, sql: string, binds: unknown[] = []) { this.db = db; this.sql = sql; this.binds = binds; }
 	bind(...values: unknown[]) {
 		for (const v of values) if (v === undefined) throw new Error(`D1: undefined cannot be bound (${this.sql.slice(0, 60)})`);
+		if (values.length > 100) throw new Error(`D1: too many SQL variables, at most 100 per query (${values.length} in ${this.sql.slice(0, 60)})`);
 		return new Statement(this.db, this.sql, values);
 	}
 	run() {

@@ -42,15 +42,36 @@ export function plan(r: Pick<PaymentRow, 'id' | 'tenant_id' | 'kind' | 'status' 
 	return [];
 }
 
-const INSERT = `INSERT OR IGNORE INTO ledger_postings (reference, payment_id, tenant_id, pool, kind, source, destination, amount, asset, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-const insert = (env: Env, x: Posting) => env.DB.prepare(INSERT).bind(x.reference, x.payment_id, x.tenant_id, x.pool, x.kind, x.source, x.destination, x.amount, x.asset, x.note, x.created_at);
+/**
+ * A posting is written only if what the planner assumed about the payment's other postings is still true, checked in the same statement.
+ * Two syncs of one payment racing (a payout accepted while its callback lands) can then never book both a hold and a payout from available,
+ * or release a hold that was already paid out: the loser's insert does nothing, and it plans again from what is really there.
+ */
+const has = (kind: PostingKind) => `EXISTS (SELECT 1 FROM ledger_postings WHERE payment_id = ?2 AND kind = '${kind}')`;
+const holding = `(${has('hold')} AND NOT ${has('release')} AND NOT ${has('out')})`;
+const GUARD: Record<string, string> = {
+	hold: `NOT ${has('hold')} AND NOT ${has('out')}`,
+	'out:held': holding,
+	'out:available': `NOT ${holding} AND NOT ${has('out')}`,
+	release: holding,
+};
+const insert = (env: Env, x: Posting) => {
+	const guard = GUARD[x.kind === 'out' ? `out:${x.source.endsWith(':held') ? 'held' : 'available'}` : x.kind];
+	return env.DB.prepare(`INSERT OR IGNORE INTO ledger_postings (reference, payment_id, tenant_id, pool, kind, source, destination, amount, asset, note, created_at)
+		SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 ${guard ? `WHERE ${guard}` : ''}`)
+		.bind(x.reference, x.payment_id, x.tenant_id, x.pool, x.kind, x.source, x.destination, x.amount, x.asset, x.note, x.created_at);
+};
 
 /** Brings one payment's postings up to date with its state. Never throws: the books must not stop a payment (a backfill repairs a miss). */
 export async function syncLedger(env: Env, r: PaymentRow, now = Date.now()): Promise<void> {
 	try {
-		const { results } = await env.DB.prepare(`SELECT kind FROM ledger_postings WHERE payment_id = ?`).bind(r.id).all<{ kind: PostingKind }>();
-		const todo = plan(r, new Set(results.map((x) => x.kind)), now);
-		if (todo.length) await env.DB.batch(todo.map((x) => insert(env, x)));
+		for (let round = 0; round < 3; round++) { // a guarded insert that did nothing means another sync got there first: plan again from what it booked
+			const { results } = await env.DB.prepare(`SELECT kind FROM ledger_postings WHERE payment_id = ?`).bind(r.id).all<{ kind: PostingKind }>();
+			const todo = plan(r, new Set(results.map((x) => x.kind)), now);
+			if (!todo.length) return;
+			const done = await env.DB.batch(todo.map((x) => insert(env, x)));
+			if (done.every((d) => d.meta.changes)) return;
+		}
 	} catch (e) { console.error(JSON.stringify({ msg: 'ledger.sync_failed', payment: r.id, error: String(e) })); }
 }
 
@@ -59,9 +80,10 @@ export async function backfillLedger(env: Env, now = Date.now()): Promise<{ paym
 	const before = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ledger_postings`).first<number>('n')) ?? 0;
 	let payments = 0, after = '';
 	for (;;) {
-		const { results } = await env.DB.prepare(`SELECT * FROM payments WHERE id > ? ORDER BY id LIMIT 200`).bind(after).all<PaymentRow>();
+		// a page of payments, and their postings by id range: two bound values, whatever the page size (D1 allows 100 per query)
+		const { results } = await env.DB.prepare(`SELECT * FROM payments WHERE id > ? ORDER BY id LIMIT 100`).bind(after).all<PaymentRow>();
 		if (!results.length) break;
-		const { results: had } = await env.DB.prepare(`SELECT payment_id, kind FROM ledger_postings WHERE payment_id IN (${results.map(() => '?').join(',')})`).bind(...results.map((r) => r.id)).all<{ payment_id: string; kind: PostingKind }>();
+		const { results: had } = await env.DB.prepare(`SELECT payment_id, kind FROM ledger_postings WHERE payment_id > ? AND payment_id <= ?`).bind(after, results.at(-1)!.id).all<{ payment_id: string; kind: PostingKind }>();
 		const todo = results.flatMap((r) => plan(r, new Set(had.filter((h) => h.payment_id === r.id).map((h) => h.kind)), r.settled_at ?? r.updated_at ?? now));
 		if (todo.length) await env.DB.batch(todo.map((x) => insert(env, x)));
 		payments += results.length; after = results.at(-1)!.id;
@@ -187,7 +209,9 @@ export async function postPending(env: Env, now = Date.now()): Promise<{ posted:
 		} catch (e) {
 			await env.DB.prepare(`UPDATE ledger_postings SET attempts = attempts + 1, last_error = ? WHERE reference = ?`).bind(String(e instanceof Error ? e.message : e).slice(0, 300), x.reference).run();
 			failed++;
-			if (!(e instanceof FormanceError) || e.status >= 500 || e.code === 'AUTH') break; // Formance unreachable or refusing us: try again next sweep, not row by row
+			if (e instanceof FormanceError && e.status === 401) token = null; // a revoked or expired token: get a new one next time
+			// Formance unreachable, refusing us or rate-limiting: try again next sweep, not row by row (each row would lose a try for nothing)
+			if (!(e instanceof FormanceError) || e.status >= 500 || e.status === 401 || e.status === 403 || e.status === 429 || e.code === 'AUTH') break;
 		}
 	}
 	if (posted || failed) log('ledger.sweep', { posted, failed });
@@ -210,6 +234,12 @@ export async function formanceBalances(env: Env): Promise<PoolBooks[]> {
 		cursor = j.cursor.next;
 	}
 	return booksFrom(all);
+}
+
+/** Gives stuck postings their tries back (after Formance access is fixed): the next sweep sends them again. */
+export async function retryStuck(env: Env): Promise<{ reset: number }> {
+	const r = await env.DB.prepare(`UPDATE ledger_postings SET attempts = 0, last_error = NULL WHERE posted_at IS NULL AND attempts >= ?`).bind(MAX_ATTEMPTS).run();
+	return { reset: r.meta.changes ?? 0 };
 }
 
 /** What waits to reach Formance. */

@@ -374,7 +374,8 @@ function booksSection(b) {
 		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
 			h('button', { class: 'btn', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
 			h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; try { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); } catch (x) { e.target.disabled = false; toast(x.message) } } }, 'Rebuild from payments')),
-		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status),
+		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status,
+			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: async (e) => { e.currentTarget.disabled = true; try { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); } catch (x) { e.currentTarget.disabled = false; toast(x.message) } } }, 'Retry stuck postings')] : null),
 		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
 			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }

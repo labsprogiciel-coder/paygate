@@ -279,7 +279,7 @@ export async function startDisbursement(env: Env, row: PaymentRow, providers: Pr
 		if (out.state === 'completed') return (await applyObserved(env, row, { state: 'completed' }, 'provider', now)).row;
 		if (out.state === 'failed') return (await applyObserved(env, row, { state: 'failed', error: out.error, detail: out.detail }, 'provider', now)).row;
 		await event(env, row.id, 'accepted', 'provider', null, now); // pending: the callback or the recheck settles it
-		await syncLedger(env, row, now); // the money is committed: hold it in the books
+		await syncLedger(env, (await getRow(env, row.id)) ?? row, now); // the money is committed: hold it in the books (as it is now: its callback may already have settled it)
 	} catch (e) {
 		// Unknown outcome: money may have moved. Left for the status check and then a person; NEVER retried automatically.
 		return (await applyObserved(env, row, { state: 'unknown', detail: `UNKNOWN OUTCOME: ${e instanceof Error ? e.message : String(e)}` }, 'provider', now)).row;

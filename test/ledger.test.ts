@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { backfillLedger, booksFrom, booksReport, checkBooks, journalBalances, plan, postPending, resetFormanceToken, type PostingKind } from '../src/ledger.ts';
+import { backfillLedger, booksFrom, booksReport, checkBooks, journalBalances, plan, postPending, resetFormanceToken, syncLedger, type PostingKind } from '../src/ledger.ts';
 import type { Providers } from '../src/providers/types.ts';
 import { COLLECT, PAYOUT, setup } from './helpers/gateway.ts';
 import { silence, stubFetch, type Call } from './helpers/env.ts';
@@ -184,4 +184,59 @@ test('reconciliation: the books beside the wallet and beside Formance, and adjus
 test('account names round-trip tenant ids with dashes', () => {
 	assert.deepEqual(booksFrom([['tenants:claude_test:BFA:available', 900], ['tenants:claude_test:BFA:held', 100], ['pool:BFA:unallocated', 5], ['world', -1005]]),
 		[{ pool: 'BFA', tenants: [{ tenant: 'claude-test', available: 900, held: 100 }], unallocated: 5, total: 1005 }]);
+});
+
+test('rebuilding the books from many payments stays within D1 limits (at most 100 bound values per query)', async () => {
+	const quiet = silence();
+	try {
+		const g = await setup();
+		const insert = g.sqlite.prepare(`INSERT INTO payments (id, tenant_id, kind, reference, rail, operator, country, counterparty, amount, status, provider, request_hash, created_at, updated_at)
+			VALUES (?, 'shop', 'collection', ?, 'mobile_money', 'orange', 'CIV', '+2250700000001', 100, 'completed', 'sandbox', 'h', 1, 1)`);
+		for (let i = 0; i < 120; i++) insert.run(`pg${String(i).padStart(18, '0')}`, `bulk-${i}`);
+		const r = await g.admin('POST', '/admin/ledger/backfill');
+		assert.equal(r.status, 200, JSON.stringify(r.body));
+		assert.deepEqual(r.body, { payments: 120, added: 120 });
+	} finally { quiet(); }
+});
+
+test('two syncs of one payout racing (accepted, and its callback already completed) never book a hold and a payout from available', async () => {
+	const quiet = silence();
+	try {
+		const g = await setup();
+		const p = await g.call('POST', '/v1/disbursements', PAYOUT); // completes at once in the sandbox
+		g.sqlite.prepare('DELETE FROM ledger_postings').run();
+		const done = g.row(p.body.id);
+		const stale = { ...done, status: 'processing' }; // what startDisbursement held before the callback landed
+		await Promise.all([syncLedger(g.env, stale as any), syncLedger(g.env, done as any)]); // both read "nothing booked" before either writes
+		const rows = g.sqlite.prepare('SELECT kind, source FROM ledger_postings ORDER BY kind').all() as any[];
+		const [b] = await journalBalances(g.env);
+		assert.deepEqual(b!.tenants[0], { tenant: 'shop', available: -PAYOUT.amount, held: 0 }, `paid out once, nothing stuck in held: ${JSON.stringify(rows)}`);
+	} finally { quiet(); }
+});
+
+test('Formance refusing us (401, 403, 429) stops the sweep without spending every row\'s tries; a 401 drops the token; stuck postings can be retried', async () => {
+	const quiet = silence();
+	try {
+		resetFormanceToken();
+		const g = await setup(ON);
+		let status = 401, tokens = 0;
+		const net = stubFetch((c) => {
+			const u = new URL(c.url);
+			if (u.host !== 'formance.test') return undefined;
+			if (u.pathname === '/api/auth/oauth/token') { tokens++; return new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 })); }
+			if (status !== 200) return new Response(JSON.stringify({ errorMessage: 'no' }), { status });
+			return new Response(JSON.stringify({ data: { id: 1 } }));
+		});
+		try {
+			for (let i = 0; i < 3; i++) await g.call('POST', '/v1/disbursements', { ...PAYOUT, reference: `payout-${i}` });
+			for (const s of [401, 403, 429]) { status = s; assert.deepEqual(await postPending(g.env), { posted: 0, failed: 1 }, `${s}: one try, then stop`); }
+			assert.equal(tokens, 2, 'the token was fetched again after the 401');
+			g.sqlite.prepare('UPDATE ledger_postings SET attempts = 10').run(); // as if stuck
+			status = 200;
+			assert.deepEqual(await postPending(g.env), { posted: 0, failed: 0 }, 'stuck postings are not retried on their own');
+			const r = await g.admin('POST', '/admin/ledger/retry');
+			assert.deepEqual(r.body, { reset: 3 });
+			assert.deepEqual(await postPending(g.env), { posted: 3, failed: 0 });
+		} finally { net.restore(); }
+	} finally { quiet(); }
 });
