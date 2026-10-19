@@ -57,7 +57,7 @@ const avatar = (p, kind = p.object ?? p.kind) => {
 const icon = (p) => { const f = p.rail === 'mobile_money' ? ICON[p.operator] : p.rail.startsWith('pispi') ? 'pispi' : null; return f ? h('img', { class: 'logo', src: `/providers/${f}.png`, alt: '', width: 20, height: 20 }) : null; };
 const COUNTRY = { CIV: ['ci', "Côte d'Ivoire"], SEN: ['sn', 'Senegal'], BFA: ['bf', 'Burkina Faso'] };
 const origin = (p) => { const c = COUNTRY[p.country]; return c ? h('span', { class: 'chan' }, h('img', { class: 'flag', src: `/country/${c[0]}.png`, alt: '', width: 20, height: 20 }), h('span', { title: c[1] }, p.country)) : h('span', { class: 'muted' }, '–'); };
-const pspBadge = (p) => h('span', { class: `badge psp psp-${p.provider}` }, pspLogo(p.provider, 14), PSP[p.provider] || p.provider);
+const pspBadge = (p) => h('span', { class: `badge pspb psp-${p.provider}` }, pspLogo(p.provider, 14), PSP[p.provider] || p.provider);
 const channel = (p) => p.rail === 'mobile_money' ? (OPERATOR[p.operator] || p.operator || 'Mobile money') : (RAIL[p.rail] || p.rail);
 const badge = (s) => h('span', { class: `badge s-${s}` }, s);
 const pretty = (t) => { if (!t) return null; try { return JSON.stringify(JSON.parse(t), null, 2) } catch { return t } };
@@ -200,15 +200,15 @@ const SKELETON = {
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
 };
 
-const SIZES = [25, 50, 100];
-const pref = { get: () => { try { return Number(localStorage.getItem('pg_page_size')) || 50 } catch { return 50 } }, set: (n) => { try { localStorage.setItem('pg_page_size', String(n)) } catch {} } };
+const SIZES = [10, 25, 50];
+const pref = { get: () => { try { return Number(localStorage.getItem('pg_rows')) || 10 } catch { return 10 } }, set: (n) => { try { localStorage.setItem('pg_rows', String(n)) } catch {} } };
 /**
  * Cursor paging, newest first. `fetch(cursor, size)` answers { data, next, total? }; Older follows `next`, Newer goes back up the cursors already seen.
  * The page keeps its height while the next one loads (a skeleton of the same number of rows), and scrolls back to the top of the list.
  */
 function pager({ fetch, render, skeleton, noun = 'rows' }) {
 	const body = h('div'), nav = h('div', { class: 'pager' });
-	let stack = [null], size = SIZES.includes(pref.get()) ? pref.get() : 50, last = null, loading = false, seq = 0;
+	let stack = [null], size = SIZES.includes(pref.get()) ? pref.get() : 10, last = null, loading = false, seq = 0;
 	const sizeSel = h('select', { 'aria-label': `${noun} per page` }, SIZES.map((n) => h('option', { value: n, selected: n === size ? true : null }, `${n} per page`)));
 	sizeSel.addEventListener('change', () => { size = Number(sizeSel.value); pref.set(size); reset() });
 	const draw = () => {
