@@ -5,7 +5,7 @@
  * completed credits its tenant, a payout that was sent is held, then paid out or released. One planner decides the postings from a payment's
  * state and the postings it already has, so live transitions, backfills and repeats all end in the same books, never twice.
  *
- * If FORMANCE_URL is set, a cron sweep copies the journal to a Formance ledger (the posting's reference is the Formance reference, so a
+ * If FORMANCE_BASE_URL is set, a cron sweep copies the journal to a Formance ledger (the posting's reference is the Formance reference, so a
  * retry never books twice). Formance being down never touches payments: postings wait and go later.
  * This first step records only: scripts allow overdrafts, so a tenant paying out more than it collected shows as a negative balance
  * instead of being refused. Enforcing it comes once the books have run clean.
@@ -131,7 +131,7 @@ export function booksFrom(balances: [string, number][]): PoolBooks[] {
 
 // ---- Formance ---------------------------------------------------------------------------------------------------------------------
 
-export const ledgerEnabled = (env: Env) => !!env.FORMANCE_URL;
+export const ledgerEnabled = (env: Env) => !!env.FORMANCE_BASE_URL;
 const LEDGER = (env: Env) => env.FORMANCE_LEDGER || 'paygate';
 const SWEEP_BATCH = 50;
 /** Postings that keep failing are left for a person after this many tries (an alert says so); the rest wait for the next sweep. */
@@ -159,7 +159,7 @@ let token: { value: string; until: number } | null = null;
 async function bearer(env: Env): Promise<Record<string, string>> {
 	if (!env.FORMANCE_CLIENT_ID) return {};
 	if (token && Date.now() < token.until) return { authorization: `Bearer ${token.value}` };
-	const url = new URL(env.FORMANCE_TOKEN_URL || '/api/auth/oauth/token', env.FORMANCE_URL);
+	const url = new URL(env.FORMANCE_TOKEN_URL || '/api/auth/oauth/token', env.FORMANCE_BASE_URL);
 	const res = await fetch(url.href, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, signal: AbortSignal.timeout(10_000),
 		body: new URLSearchParams({ grant_type: 'client_credentials', client_id: env.FORMANCE_CLIENT_ID, client_secret: env.FORMANCE_CLIENT_SECRET ?? '' }) });
 	if (!res.ok) throw new FormanceError(res.status, 'AUTH', `Formance token request failed (${res.status})`);
@@ -171,7 +171,7 @@ async function bearer(env: Env): Promise<Record<string, string>> {
 export const resetFormanceToken = () => { token = null; };
 
 async function formance(env: Env, method: string, path: string, body?: unknown): Promise<unknown> {
-	const res = await fetch(new URL(`/api/ledger/v2/${encodeURIComponent(LEDGER(env))}${path}`, env.FORMANCE_URL).href, {
+	const res = await fetch(new URL(`/api/ledger/v2/${encodeURIComponent(LEDGER(env))}${path}`, env.FORMANCE_BASE_URL).href, {
 		method, signal: AbortSignal.timeout(10_000),
 		headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(await bearer(env)) },
 		body: body === undefined ? undefined : JSON.stringify(body),
