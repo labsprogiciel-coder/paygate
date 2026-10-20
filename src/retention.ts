@@ -4,12 +4,12 @@ import { log } from './util.ts';
 /**
  * Keeps the database from growing without bound. What is kept forever: payments, their history (payment_events) and the journal
  * (ledger_postings), which are the financial record. Provider callbacks are already capped at the last 1000 (callbacks.ts).
- * What goes, once a day:
+ * What goes, every hour (so a busy day's backlog never outruns it):
  *  - the payload of a webhook delivered more than KEEP_PAYLOAD_DAYS ago (the row stays: id, type, status, attempts, when); the tenant has it,
  *    and the payment and its history say the same thing;
  *  - test pings delivered more than KEEP_PAYLOAD_DAYS ago, entirely.
- * Dead deliveries are never touched: a person retries them. Work is done in small batches so one run stays well inside D1's limits;
- * whatever is left is done the next day.
+ * Dead deliveries are never touched: a person retries them. Each run does at most rounds × batch rows (10,000) so it stays well inside
+ * D1's limits; whatever is left is done the next hour (up to 240,000 a day).
  */
 export const KEEP_PAYLOAD_DAYS = 30;
 const DAY = 86_400_000;
@@ -17,7 +17,7 @@ const DAY = 86_400_000;
 export const DB_LIMIT_BYTES = 10 * 1024 ** 3;
 const WARN_SHARE = 0.8;
 
-export async function prune(env: Env, now = Date.now(), o: { batch?: number; rounds?: number } = {}): Promise<{ cleared: number; pings: number }> {
+export async function prune(env: Env, now = Date.now(), o: { batch?: number; rounds?: number; checkSize?: boolean } = {}): Promise<{ cleared: number; pings: number }> {
 	const batch = o.batch ?? 500, rounds = o.rounds ?? 20, before = now - KEEP_PAYLOAD_DAYS * DAY;
 	const out = { cleared: 0, pings: 0 };
 	for (let i = 0; i < rounds; i++) {
@@ -30,7 +30,7 @@ export async function prune(env: Env, now = Date.now(), o: { batch?: number; rou
 		if (c < batch && p < batch) break;
 	}
 	const bytes = await databaseBytes(env);
-	if (bytes !== null && bytes >= DB_LIMIT_BYTES * WARN_SHARE) {
+	if ((o.checkSize ?? true) && bytes !== null && bytes >= DB_LIMIT_BYTES * WARN_SHARE) { // the cron asks once a day, so the alert does not repeat hourly
 		await alert(env, { level: 'warning', title: 'The database is over 80% of its size limit', details: { bytes, limit: DB_LIMIT_BYTES } });
 	}
 	log('retention.run', { ...out, bytes });

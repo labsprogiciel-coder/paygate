@@ -65,6 +65,8 @@ test('the database size is reported, and over 80% of the limit an alert goes out
 		await prune(e.env, NOW);
 		assert.equal(f.alerts().length, 0);
 		size = Math.ceil(DB_LIMIT_BYTES * 0.85);
+		await prune(e.env, NOW, { checkSize: false });
+		assert.equal(f.alerts().length, 0, 'the hourly runs do not alert; only the 03:05 one checks the size');
 		await prune(e.env, NOW);
 		assert.equal(f.alerts().length, 1);
 		assert.match(f.alerts()[0]!.title, /80%/);

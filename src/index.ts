@@ -145,7 +145,7 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 	fetch: handle,
 
-	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books; at 03:05, prune old webhook payloads. Each step fails alone. */
+	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. At :05 every hour: prune old webhook payloads. Each step fails alone. */
 	async scheduled(controller: ScheduledController, env: Env): Promise<void> {
 		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); reportError(e, { where: 'cron', step: name }); } };
 		const providers = getProviders(env);
@@ -155,7 +155,7 @@ export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 		await run('ledger', () => postPending(env));
 		const at = new Date(controller.scheduledTime);
 		if (at.getUTCHours() === 3 && at.getUTCMinutes() === 0) await run('books', () => checkBooks(env, providers));
-		if (at.getUTCHours() === 3 && at.getUTCMinutes() === 5) await run('retention', () => prune(env));
+		if (at.getUTCMinutes() === 5) await run('retention', () => prune(env, Date.now(), { checkSize: at.getUTCHours() === 3 }));
 		log('cron.done', {});
 	},
 } satisfies ExportedHandler<Env>);

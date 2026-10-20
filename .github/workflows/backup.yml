@@ -45,7 +45,7 @@ jobs:
       - name: Upload to R2
         run: |
           set -euo pipefail
-          KEY="d1/paygate-$(date -u +%F).sql.gz"
+          KEY="d1/paygate-$(date -u +%Y-%m-%dT%H%MZ).sql.gz"   # to the minute: a second run on the same day adds a restore point, never replaces one
           npx wrangler r2 object put "$BUCKET/$KEY" --remote --file "$RUNNER_TEMP/paygate.sql.gz" --content-type application/gzip
           echo "::notice::backup stored at r2://$BUCKET/$KEY"
       - name: Remove the local copy

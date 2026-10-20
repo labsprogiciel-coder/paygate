@@ -300,7 +300,7 @@ async function overview(main) {
 	}
 	if (att.deadWebhooks) todo.push({ key: `dead:${att.deadWebhooks}`, level: 'warn', title: `${plural(att.deadWebhooks, 'webhook')} not delivered`, why: 'A product was not told about a payment.', href: '#/events?source=webhook&problems=1', action: 'Retry' });
 	const db = att.database?.bytes != null ? att.database : null;
-	if (db && db.bytes >= db.limit * 0.8) todo.push({ key: `db:${Math.floor(db.bytes / 2 ** 28)}`, level: 'warn', title: `Database ${Math.round((db.bytes / db.limit) * 100)}% full`, why: `${fmtBytes(db.bytes)} of ${fmtBytes(db.limit)}. Old webhook payloads are pruned daily; look for what else grew.`, href: '#/events', action: 'View' });
+	if (db && db.bytes >= db.limit * 0.8) todo.push({ key: `db:${Math.floor(db.bytes / 2 ** 28)}`, level: 'warn', title: `Database ${Math.round((db.bytes / db.limit) * 100)}% full`, why: `${fmtBytes(db.bytes)} of ${fmtBytes(db.limit)}. Old webhook payloads are already pruned every hour; look for what else grew.`, href: '#/events', action: 'View' });
 	if (att.rejectedCallbacks24h) todo.push({ key: `rejected:${att.rejectedCallbacks24h}`, level: 'warn', title: `${plural(att.rejectedCallbacks24h, 'callback')} rejected (24 h)`, why: 'Failed the signature or shape check.', href: '#/events?source=callback&problems=1', action: 'Inspect' });
 
 	// the last 24 hours, every provider together
