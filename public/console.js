@@ -518,7 +518,7 @@ const POOL_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso', 
 const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
 function booksSection(b) {
 	const o = b.outbox;
-	const status = !b.enabled ? 'Kept in the gateway only: set FORMANCE_URL to copy it to a Formance ledger.'
+	const status = !b.enabled ? 'Kept in the gateway only: set FORMANCE_BASE_URL to copy it to a Formance ledger.'
 		: b.formanceError ? `Formance could not be read: ${b.formanceError}`
 		: o.stuck ? `${plural(o.stuck, 'posting')} stuck on the way to Formance (ledger ${b.ledger}).`
 		: o.pending ? `${plural(o.pending, 'posting')} waiting for Formance (ledger ${b.ledger}).` : `Copied to Formance (ledger ${b.ledger}), nothing waiting.`;
