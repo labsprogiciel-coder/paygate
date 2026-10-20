@@ -58,9 +58,10 @@ npm run check                         # tsc
 | `src/sentry.ts`, `alerts.ts` | Error reporting to Sentry (scrubbed) and operator alerts |
 | `public/` | The operator console (static files: `index.html`, `console.js`, `console.css`), served at `/` by the Worker's assets; it only calls `/admin/*` |
 | `migrations/` | D1 schema |
+| `scripts/restore-drill.sh` | Restores a backup into a scratch database and proves Time Travel works (see docs/operations.md, Backups and restore) |
+| `.github/workflows/` | CI (typecheck and tests on every PR) and the weekly backup to R2 |
 
 ## Not done yet
 
-- No per-tenant rate limiting; abuse guards are the provider's and the per-tenant `max_amount`.
 - No client SDK; [`src/signing.ts`](src/signing.ts) is written to be copied for webhook verification.
 - Not tested against the live pawaPay or PI-SPI sandboxes: the adapters are ported from Relay's code, which was, and are tested here against stubs that answer as those providers do. Run `docs/operations.md` → "Before going live" first.

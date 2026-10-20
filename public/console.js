@@ -282,6 +282,7 @@ const table = (cols, rows, empty) => rows.length
 
 // ---- overview -------------------------------------------------------------------------------------------------------------------
 const compact = (n) => n >= 1e9 ? `${+(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${+(n / 1e3).toFixed(1)}K` : new Intl.NumberFormat('fr-FR').format(n).replace(/\u202f|\u00a0/g, ' ');
+const fmtBytes = (b) => b >= 2 ** 30 ? `${+(b / 2 ** 30).toFixed(1)} GB` : b >= 2 ** 20 ? `${+(b / 2 ** 20).toFixed(1)} MB` : `${Math.ceil(b / 1024)} KB`;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const tile = (label, value, sub, cls) => h('div', { class: `tile${cls ? ' ' + cls : ''}` }, h('div', { class: 'tl' }, label), h('div', { class: 'tv' }, value), sub ? h('div', { class: 'ts' }, sub) : null);
 
@@ -298,6 +299,8 @@ async function overview(main) {
 		if (rows.length) todo.push({ key: `float-${status}:${rows.map((r) => r.country).join(',')}`, level, title: `Float ${status}: ${rows.map((r) => r.country).join(', ')}`, why: `${rows[0].reasons.join(' ') || 'Below the minimum float'} (${fmtAmount(flt.floor)}).`, href: '#/providers', action: 'View' });
 	}
 	if (att.deadWebhooks) todo.push({ key: `dead:${att.deadWebhooks}`, level: 'warn', title: `${plural(att.deadWebhooks, 'webhook')} not delivered`, why: 'A product was not told about a payment.', href: '#/events?source=webhook&problems=1', action: 'Retry' });
+	const db = att.database?.bytes != null ? att.database : null;
+	if (db && db.bytes >= db.limit * 0.8) todo.push({ key: `db:${Math.floor(db.bytes / 2 ** 28)}`, level: 'warn', title: `Database ${Math.round((db.bytes / db.limit) * 100)}% full`, why: `${fmtBytes(db.bytes)} of ${fmtBytes(db.limit)}. Old webhook payloads are already pruned every hour; look for what else grew.`, href: '#/events', action: 'View' });
 	if (att.rejectedCallbacks24h) todo.push({ key: `rejected:${att.rejectedCallbacks24h}`, level: 'warn', title: `${plural(att.rejectedCallbacks24h, 'callback')} rejected (24 h)`, why: 'Failed the signature or shape check.', href: '#/events?source=callback&problems=1', action: 'Inspect' });
 
 	// the last 24 hours, every provider together
@@ -319,7 +322,8 @@ async function overview(main) {
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
 		h('div', { class: 'cols' },
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
-			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))));
+			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest events'), h('a', { href: '#/events' }, 'All events')), feedList(feed.data, { compact: true }))),
+		db ? h('p', { class: 'muted small' }, `Database: ${fmtBytes(db.bytes)} of ${fmtBytes(db.limit)}`) : null);
 	notices(todo);
 }
 

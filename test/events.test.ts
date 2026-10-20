@@ -76,6 +76,6 @@ test('paging never skips or repeats an event, even when several share a timestam
 test('the attention counts match what needs a person', async () => {
 	const g = await seeded();
 	const r = await g.admin('GET', '/admin/attention');
-	assert.deepEqual(r.body, { unknown: 0, deadWebhooks: 1, rejectedCallbacks24h: 1 });
+	assert.deepEqual(r.body, { unknown: 0, deadWebhooks: 1, rejectedCallbacks24h: 1, database: { bytes: null, limit: 10 * 1024 ** 3 } });
 	assert.equal((await g.call('GET', '/admin/attention')).status, 401, 'a tenant key cannot read it');
 });

@@ -1,0 +1,53 @@
+name: Backup
+
+# Weekly export of the production D1 database to a private R2 bucket, for anything older than D1 Time Travel's 30 days and for audit.
+# Off until the repository variable BACKUPS_ENABLED is "true", with the secrets CLOUDFLARE_API_TOKEN (D1 edit, R2 write) and
+# CLOUDFLARE_ACCOUNT_ID set. The dump holds customer phone numbers: it goes only to R2, never to a workflow artifact or the log.
+# D1 cannot serve queries while it is being exported (seconds at today's size): payment calls in that window fail and are retried
+# by the products and pawaPay, and the reconcile cron catches up. Hence the quietest hour of the week.
+on:
+  schedule:
+    - cron: '30 2 * * 0' # Sunday 02:30 UTC, the quietest hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  export:
+    if: vars.BACKUPS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BUCKET: ${{ vars.BACKUP_BUCKET || 'paygate-backups' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Export, check, compress
+        run: |
+          set -euo pipefail
+          npx wrangler d1 export paygate --remote --output "$RUNNER_TEMP/paygate.sql" -y
+          grep -q 'CREATE TABLE.*payments' "$RUNNER_TEMP/paygate.sql" || { echo "::error::the export has no payments table"; exit 1; }
+          gzip -9 "$RUNNER_TEMP/paygate.sql"
+          echo "size: $(stat -c %s "$RUNNER_TEMP/paygate.sql.gz") bytes"
+      - name: Upload to R2
+        run: |
+          set -euo pipefail
+          KEY="d1/paygate-$(date -u +%Y-%m-%dT%H%MZ)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.sql.gz"   # unique per run and re-run: a backup never replaces another
+          npx wrangler r2 object put "$BUCKET/$KEY" --remote --file "$RUNNER_TEMP/paygate.sql.gz" --content-type application/gzip
+          echo "::notice::backup stored at r2://$BUCKET/$KEY"
+      - name: Remove the local copy
+        if: always()
+        run: rm -f "$RUNNER_TEMP/paygate.sql" "$RUNNER_TEMP/paygate.sql.gz"

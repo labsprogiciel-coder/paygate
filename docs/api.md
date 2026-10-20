@@ -22,8 +22,12 @@ Every `/v1` call carries `Authorization: Bearer pgk_<id>_<secret>`. The operator
 | 409 | `idempotency_conflict` |
 | 413 | `payload_too_large` |
 | 422 | `provider_unavailable` `amount_out_of_bounds` `amount_too_large` `pre_auth_code_required` `redirect_urls_required` `no_webhook` |
-| 429 | `rtp_limit` |
+| 429 | `rtp_limit` `rate_limited` |
 | 5xx | `internal`, or the request failed before anything was recorded |
+
+## Rate limits
+
+Each account has two budgets per minute: **60 writes** (every `POST`: creating a collection or a disbursement, a test webhook) and **600 reads** (every `GET`). Going over answers `429 rate_limited` with a `Retry-After` header (seconds) and `retryAfter` in the error; nothing is created. Wait that long, then retry with the **same `reference`**, so a retry can never make a second payment. The counters are approximate (counted per Cloudflare location); they stop runaway loops, they are not a quota to plan against. Polling a payment is a read: prefer webhooks.
 
 ## Collections (money in)
 

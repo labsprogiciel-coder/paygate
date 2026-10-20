@@ -10,7 +10,9 @@ import { createPayment, getRowFor, history, listPayments, refresh, view } from '
 import { pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 import { getProviders } from './providers/index.ts';
 import type { Providers } from './providers/types.ts';
+import { rateLimit } from './ratelimit.ts';
 import { reconcile } from './reconcile.ts';
+import { prune } from './retention.ts';
 import { authenticate, type Tenant } from './tenants.ts';
 import { deliverDue, queuePing } from './webhooks.ts';
 import { log, on } from './util.ts';
@@ -31,6 +33,7 @@ const KIND: Record<string, Kind> = { collections: 'collection', disbursements: '
 /** The tenant API, `/v1/*`. Every read and write is scoped to the tenant the key belongs to. */
 async function tenantApi(env: Env, request: Request, ctx: ExecutionContext, path: string, providers: Providers): Promise<Response> {
 	const tenant: Tenant = await authenticate(env, request);
+	await rateLimit(env, tenant.id, request.method === 'POST'); // every /v1 POST creates something (a payment, a test webhook)
 	const url = new URL(request.url);
 	const wake = () => ctx.waitUntil(deliverDue(env).then(() => undefined, (e) => console.error(JSON.stringify({ msg: 'webhooks.failed', error: String(e) }))));
 	let g: RegExpExecArray | null;
@@ -128,7 +131,11 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 		}
 		throw new ApiError(404, 'not_found', 'No such endpoint');
 	} catch (e) {
-		if (e instanceof ApiError) return json({ error: { code: e.code, message: e.message, ...e.extra } }, e.status);
+		if (e instanceof ApiError) {
+			const res = json({ error: { code: e.code, message: e.message, ...e.extra } }, e.status);
+			if (typeof e.extra.retryAfter === 'number') res.headers.set('retry-after', String(e.extra.retryAfter));
+			return res;
+		}
 		console.error(JSON.stringify({ msg: 'request.failed', path, error: e instanceof Error ? e.message : String(e) }));
 		reportError(e, { where: 'request', method: request.method, path: path.replace(/\/(pg[0-9a-f]{18}|[A-Za-z0-9_-]{20,})(?=\/|$)/g, '/:id') });
 		return json({ error: { code: 'internal', message: 'Something went wrong on our side' } }, 500);
@@ -138,7 +145,7 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 	fetch: handle,
 
-	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. Each step fails alone. */
+	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. At :05 every hour: prune old webhook payloads. Each step fails alone. */
 	async scheduled(controller: ScheduledController, env: Env): Promise<void> {
 		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); reportError(e, { where: 'cron', step: name }); } };
 		const providers = getProviders(env);
@@ -148,6 +155,7 @@ export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 		await run('ledger', () => postPending(env));
 		const at = new Date(controller.scheduledTime);
 		if (at.getUTCHours() === 3 && at.getUTCMinutes() === 0) await run('books', () => checkBooks(env, providers));
+		if (at.getUTCMinutes() === 5) await run('retention', () => prune(env, Date.now(), { checkSize: at.getUTCHours() === 3 }));
 		log('cron.done', {});
 	},
 } satisfies ExportedHandler<Env>);

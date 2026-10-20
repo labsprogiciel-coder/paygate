@@ -86,6 +86,64 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 2. Asks the provider about open payments not looked at for a minute; sends a disbursement that was recorded but never sent; looks again, hourly, at failed or expired payments of the last day (a week for PI-SPI) in case they completed late.
 3. Every fifth minute: checks the wallets (alerts at most once per 12 hours per country and level).
 4. Copies new ledger postings to Formance, if it is set up. At 03:00 UTC: checks the books against the wallets and Formance.
+5. At :05 every hour: prunes old data (see Retention); at 03:05 UTC it also checks the database size.
+
+## Retention
+
+D1 allows 10 GB per database. The overview shows the current size; an alert goes out above 80%.
+
+| Data | Kept |
+|---|---|
+| Payments, their history (`payment_events`), the journal (`ledger_postings`) | Forever: the financial record |
+| Provider callbacks (`provider_events`) | The last 1000 |
+| Webhook deliveries | The row forever; its **payload** is emptied 30 days after delivery (the payment and its history hold the same facts). Test pings are deleted after 30 days. Dead and pending deliveries are never touched |
+
+The prune runs every hour at :05 in batches of at most 10,000 rows (`src/retention.ts`); a backlog is worked through over the following hours.
+
+## Backups and restore
+
+| Layer | Covers | Set up |
+|---|---|---|
+| **D1 Time Travel** | Any minute of the last 30 days, restored in place | Built in |
+| **Weekly export to R2** (`.github/workflows/backup.yml`) | Older than 30 days; a copy outside D1; audit | Opt-in, below |
+
+### Turn on the weekly export
+
+1. `npx wrangler r2 bucket create paygate-backups` (private; no public access, no custom domain). In the dashboard, add a lifecycle rule on it that deletes objects after 365 days.
+2. Create an API token with **D1 Edit** and **Workers R2 Storage Edit** on the account. In GitHub → Settings → Secrets and variables → Actions: secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, variable `BACKUPS_ENABLED` = `true` (and `BACKUP_BUCKET` if the bucket has another name).
+3. Actions → Backup → **Run workflow** once, and check the object `d1/paygate-<date>T<time>Z-<run>-<attempt>.sql.gz` appears in the bucket.
+
+It runs every Sunday at 02:30 UTC. **D1 cannot serve queries while it is being exported**, so for those seconds the API answers 500 and callbacks fail; products retry with the same reference, pawaPay retries its callbacks, and the reconcile cron settles the rest. The dump holds customer phone numbers: it lives only in the private bucket.
+
+### Restore, or repair by hand?
+
+- **A few rows are wrong** (a bad resolve, a wrong adjustment, one tenant edited by mistake): **repair forward**. Resolve with a note, book the opposite adjustment, edit the tenant back. Never restore for this: a restore throws away every other write made since.
+- **Data is broadly destroyed** (a bad migration, a mass `UPDATE` or `DELETE`): restore with Time Travel to just before the damage.
+
+Who decides: the operator on call proposes it; the studio lead agrees before a production restore. Say so in the alert channel first.
+
+### Restoring production
+
+1. Note the current bookmark, so the restore can be undone: `npx wrangler d1 time-travel info paygate`.
+2. `npx wrangler d1 time-travel restore paygate --timestamp <RFC3339, just before the damage>`. It overwrites the database and cancels queries in flight; it prints the previous bookmark, which undoes it.
+3. **What was lost is every write after that time**: payments created, status changes, webhooks queued, ledger postings, tenant edits. Get it back like this:
+   - **PI-SPI first, before any product retries.** A PI-SPI payment is matched on its `txId`/`referenceLabel`, which is the gateway payment id (`PG…`), and that id is random. A PI-SPI payment created after the bookmark is therefore gone for good from the gateway's point of view: if the customer pays it, the money arrives with a `txId` that matches no row, the reconcile cron never looks for it, and `resolve` cannot be used (there is no row). A retry would create a **new** id and a new QR or request, and the customer could pay twice. So:
+     1. List the payments received on the PI-SPI alias during the lost window (the bank's PI-SPI portal, or `GET /<participant>/paiements-recus` with the gateway's credentials).
+     2. Any whose `txId` is not in `payments` belongs to a lost payment. Ask each product for its PI-SPI orders created in the window (they hold the `PG…` id from the create response) and match on that id, then amount and time.
+     3. Paid ones: the product marks its order paid by hand, from that receipt. Unpaid ones: the product may retry.
+   - **pawaPay payments created after the bookmark** are unknown to the gateway but known to pawaPay. A product that retries with the **same reference** gets a new gateway payment (a new `pg…` id) with the **same pawaPay id**, because that id is derived from the tenant and the reference; pawaPay answers "duplicate" and nothing is paid twice. Tell product owners to retry anything created in the window and to match on their reference, not the gateway id.
+   - **Callbacks** for those payments raise "callback for a payment the gateway does not know"; list them in Events (source: callbacks) to see what was in flight.
+   - **Status changes** on older payments: the reconcile cron asks pawaPay again about open payments every minute, and about failed or expired ones of the last day every hour.
+   - **Tenant edits, keys, adjustments**: redo them by hand (operators know what they changed; the alert channel has the rest).
+4. Providers → Books → **Rebuild from payments**, then check every pool's difference is 0 (book adjustments redone in 3).
+
+### Drill
+
+`scripts/restore-drill.sh d1/paygate-<date>T<time>Z-<run>-<attempt>.sql.gz` restores a weekly backup into a scratch database, checks every table holds exactly as many rows as the dump (and fails if not), proves Time Travel undoes a write, and deletes the scratch database, on failure too. Without an argument it restores a fresh export of production instead (which blocks production queries while it exports: use a quiet hour). Run it after setting up backups and after any schema change, and log it here:
+
+| Date | Source | Duration | Rows (tenants / payments / events / postings) | By |
+|---|---|---|---|---|
+| | | | | |
 
 ## Runbook
 
@@ -102,4 +160,4 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 
 - One operator key; no UI.
 - A tenant's webhook is delivered from the cron and after each request, so a quiet gateway delivers within a minute at worst.
-- Reading a payment at most every 4 seconds per payment reaches the provider; there is no per-tenant rate limit yet.
+- Reading a payment at most every 4 seconds per payment reaches the provider. Each tenant has 60 writes and 600 reads a minute on `/v1` (`ratelimits` in `wrangler.jsonc`, keyed on the tenant id, counted per Cloudflare location); change the limits there and deploy. If the limiter fails, requests go through.
