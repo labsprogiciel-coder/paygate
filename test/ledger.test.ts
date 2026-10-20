@@ -110,6 +110,24 @@ test('the sweep copies the journal to Formance once: the posting is the referenc
 	} finally { quiet(); }
 });
 
+test('money from outside is sent from a literal @world: Formance refuses @world as a variable source', async () => {
+	const quiet = silence();
+	try {
+		resetFormanceToken();
+		const g = await setup(ON);
+		const f = formance({});
+		const net = stubFetch(f.handler);
+		try {
+			assert.equal((await g.admin('POST', '/admin/ledger/adjustments', { pool: 'SEN', amount: 9500, note: 'opening float' })).status, 201);
+			assert.deepEqual(await postPending(g.env), { posted: 1, failed: 0 });
+			const tx = f.txs[0];
+			assert.match(tx.script.plain, /source = @world\n/);
+			assert.doesNotMatch(tx.script.plain, /\$source|overdraft/);
+			assert.deepEqual(tx.script.vars, { amount: 'XOF 9500', destination: 'pool:SEN:unallocated' });
+		} finally { net.restore(); }
+	} finally { quiet(); }
+});
+
 test('Formance down: postings wait (the payment is untouched), and go later', async () => {
 	const quiet = silence();
 	try {
