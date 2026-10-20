@@ -105,16 +105,52 @@ const clearNotices = () => document.querySelector('.notices')?.replaceChildren()
 const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead') } };
 
 // ---- overlays -------------------------------------------------------------------------------------------------------------------
-function overlay(content, { center = false } = {}) {
-	const box = h('div', { class: center ? 'modal' : 'drawer', role: 'dialog', 'aria-modal': 'true' }, content);
-	const ov = h('div', { class: `overlay${center ? ' center' : ''}`, onclick: (e) => { if (e.target === ov) close() } }, box);
-	const onKey = (e) => { if (e.key === 'Escape') close() };
-	const close = () => { ov.remove(); document.removeEventListener('keydown', onKey) };
-	document.addEventListener('keydown', onKey);
+let uidN = 0;
+const uid = (prefix) => `${prefix}${++uidN}`;
+/**
+ * Dialogs and drawers stack: Escape and a click on the backdrop close only the top one, Tab stays inside it, and closing gives focus back to
+ * whatever opened it. Each is named by its first heading (aria-labelledby), or by `label` while it has none (a drawer still loading).
+ * A form passes `dirty`, and is not thrown away by Escape or the backdrop without asking.
+ */
+const OPEN = [];
+const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
+document.addEventListener('keydown', (e) => {
+	const top = OPEN.at(-1);
+	if (!top) return;
+	if (e.key === 'Escape') { e.preventDefault(); top.dismiss(); return; }
+	if (e.key !== 'Tab') return;
+	const els = [...top.box.querySelectorAll(FOCUSABLE)].filter((x) => x.getClientRects().length);
+	if (!els.length) { e.preventDefault(); top.box.focus(); return; }
+	const first = els[0], last = els.at(-1), at = document.activeElement;
+	if (!top.box.contains(at)) { e.preventDefault(); first.focus(); }
+	else if (e.shiftKey && (at === first || at === top.box)) { e.preventDefault(); last.focus(); }
+	else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+});
+function overlay(content, { center = false, label, dirty } = {}) {
+	const back = document.activeElement;
+	const box = h('div', { class: center ? 'modal' : 'drawer', role: 'dialog', 'aria-modal': 'true', tabindex: '-1' }, content);
+	const ov = h('div', { class: `overlay${center ? ' center' : ''}`, onclick: (e) => { if (e.target === ov) self.dismiss() } }, box);
+	const name = () => {
+		const hd = box.querySelector('h1, h2');
+		if (hd) { hd.id ||= uid('dlg'); box.setAttribute('aria-labelledby', hd.id); box.removeAttribute('aria-label'); }
+		else if (label) box.setAttribute('aria-label', label);
+	};
+	const self = {
+		box, ov,
+		close() { const i = OPEN.indexOf(self); if (i < 0) return; OPEN.splice(i, 1); ov.remove(); if (back?.isConnected) back.focus(); },
+		/** Escape, the backdrop: asks first when a form has unsaved changes */
+		dismiss() { if (dirty?.() && !confirm('Discard your changes?')) return; self.close(); },
+		/** replaces the content (a drawer once loaded) and names the dialog after its new heading */
+		fill(...kids) { put(box, ...kids); name(); },
+	};
+	OPEN.push(self);
 	document.body.append(ov);
-	box.querySelector('input, textarea, select, button')?.focus();
-	return { close, box };
+	name();
+	(box.querySelector('input:not([type="hidden"]):not(:disabled):not(.sr-only), textarea, select, button') || box).focus();
+	return self;
 }
+/** Leaving a page closes every dialog without moving focus back into a page that is going away. */
+const closeAll = () => { for (const o of OPEN.splice(0)) o.ov.remove(); };
 function secretModal(title, note, value) {
 	const m = overlay([h('h2', {}, title), h('p', { class: 'muted' }, note), h('code', { class: 'secret' }, value),
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => copy(value) }, 'Copy'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
@@ -246,7 +282,7 @@ async function start() {
 	route();
 }
 async function route() {
-	document.querySelectorAll('.overlay').forEach((o) => o.remove());
+	closeAll();
 	clearNotices(); // the overview puts back what still needs a person
 	const name = (location.hash.slice(2) || 'overview').split('?')[0];
 	const page = PAGES[name] ? name : 'overview';
@@ -393,7 +429,7 @@ function adjustModal(pools) {
 			e.target.disabled = true;
 			try { await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route(); }
 			catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-		} }, 'Book it'))], { center: true });
+		} }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
 	f.amount.focus();
 }
 
@@ -489,11 +525,11 @@ async function payments(main) {
 	await load();
 }
 async function paymentDrawer(id) {
-	const d = overlay(skDrawer());
+	const d = overlay(skDrawer(), { label: 'Payment' });
 	const render = (p) => {
 		const resolvable = p.status === 'processing' || p.status === 'unknown' ? ['completed', 'failed'] : p.status === 'failed' || p.status === 'expired' ? ['completed'] : [];
 		const row = (k, v) => v == null || v === '' ? null : [h('dt', {}, k), h('dd', {}, v)];
-		put(d.box, 
+		d.fill(
 			h('div', { class: 'bar' }, h('h1', { class: 'grow mono t16' }, p.id), badge(p.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			p.status === 'unknown' ? h('div', { class: 'alert bad' }, 'The outcome of this payout is unknown. Check the provider dashboard for the money before deciding.') : null,
 			h('div', { class: 'card' }, h('dl', { class: 'kv' },
@@ -505,7 +541,7 @@ async function paymentDrawer(id) {
 			h('h2', {}, 'History'),
 			h('ul', { class: 'timeline' }, p.events.map((e) => h('li', {}, h('strong', {}, e.type), e.type === 'late_completion' ? h('span', { class: 'badge late ml8' }, 'late') : null, ' ', h('span', { class: 'muted' }, `by ${e.actor}`), e.detail ? h('div', {}, e.detail) : null, h('div', { class: 't' }, fmtTime(e.created_at))))));
 	};
-	try { render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`)) } catch (e) { put(d.box, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+	try { render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`)) } catch (e) { d.fill(h('h2', {}, 'Payment'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
 function resolveModal(p, outcomes, done) {
 	const outcome = h('select', { 'aria-label': 'Outcome' }, outcomes.map((o) => h('option', { value: o }, o === 'completed' ? 'Completed: the money moved' : 'Failed: the money did not move')));
@@ -518,7 +554,7 @@ function resolveModal(p, outcomes, done) {
 				if (!note.value.trim()) { put(err, h('div', { class: 'alert bad' }, 'A note is required.')); return; }
 				e.target.disabled = true;
 				try { const np = await api('POST', `/admin/payments/${p.id}/resolve`, { outcome: outcome.value, note: note.value }); m.close(); toast('Resolved'); await done(np); } catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-			} }, 'Resolve'))], { center: true });
+			} }, 'Resolve'))], { center: true, dirty: () => !!note.value.trim() });
 }
 
 // ---- tenants --------------------------------------------------------------------------------------------------------------------
@@ -561,6 +597,7 @@ function tenantForm(t, taken = []) {
 		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), max: h('input', { type: 'number', min: 100, step: 1, value: t?.max_amount || '', placeholder: 'gateway default' }),
 		ns: h('input', { value: '', placeholder: 'leave empty for new products', spellcheck: 'false' }),
 		key: h('input', { type: 'checkbox', checked: true }) };
+	const snap = () => [f.id, f.name, f.webhook, f.max, f.ns].map((x) => x.value).join('\u0000'), start = snap();
 	const err = h('div'), idHint = h('small', { class: 'hint' });
 	// the logo: undefined = unchanged, null = removed, a data: URL = new
 	let logo, current = t?.logo || null;
@@ -603,7 +640,7 @@ function tenantForm(t, taken = []) {
 		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
 		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
 		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, '(only for products migrated from another gateway)')), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true });
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true, dirty: () => logo !== undefined || snap() !== start });
 	showLogo();
 	f.name.focus();
 }
@@ -619,11 +656,11 @@ async function connectModal(id) {
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { m.close(); tenantDrawer(id) } }, 'Open tenant'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 async function tenantDrawer(id) {
-	const d = overlay(skDrawer());
+	const d = overlay(skDrawer(), { label: 'Tenant' });
 	const render = async () => {
 		const [t, keys, books] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null)]);
 		const owns = (books?.pools || []).flatMap((p) => p.tenants.filter((x) => x.tenant === id).map((x) => ({ pool: p.pool, ...x })));
-		put(d.box, 
+		d.fill(
 			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			h('div', { class: 'card' }, h('dl', { class: 'kv' }, h('dt', {}, 'Id'), h('dd', { class: 'mono' }, t.id), h('dt', {}, 'Webhook'), h('dd', { class: 'mono' }, t.webhook_url || '–'), h('dt', {}, 'Max payment'), h('dd', {}, t.max_amount ? fmtAmount(t.max_amount) : 'gateway default'),
 				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)),
@@ -644,7 +681,7 @@ async function tenantDrawer(id) {
 				h('button', { class: 'btn', onclick: async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); } }, 'Reveal'),
 				h('button', { class: 'btn danger', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
 	};
-	try { await render() } catch (e) { put(d.box, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+	try { await render() } catch (e) { d.fill(h('h2', {}, 'Tenant'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
 function newKey(tenantId, after) {
 	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' });
