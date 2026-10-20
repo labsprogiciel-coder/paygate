@@ -168,7 +168,7 @@ label.check { display: inline-flex; align-items: center; gap: 6px; margin: 0; fo
 
 /* tenant form */
 .hint { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; } .hint code { font-family: var(--mono); }
-label.check.mt14 { margin-top: 14px; }
+label.check.mt14, .mt14 { margin-top: 14px; }
 .adv { margin-top: 12px; } .adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .copyrow { display: flex; gap: 8px; align-items: center; } .copyrow .secret { flex: 1; min-width: 0; }
 
@@ -211,9 +211,37 @@ td .sk { min-width: 36px; } .sk-row td { padding-top: 14px; padding-bottom: 14px
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .kpi { padding: 12px 20px; border-right: 1px solid var(--line); min-width: 0; } .kpi:last-child { border-right: 0; }
 .kv-big { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* card grids (Wallets, Providers): every card has the same lines, each one line long, and every row of the grid is as tall as its tallest card */
+.cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); grid-auto-rows: 1fr; margin-top: 12px; }
+.xcard { display: grid; grid-template-rows: auto auto auto auto 1fr; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; color: inherit; text-decoration: none; min-width: 0; }
+.xcard:hover { border-color: var(--muted); }
+.xcard:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.xcard.warn { border-left: 3px solid var(--bad); }
+.xcard.off { background: transparent; }
+.xcard-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.xcard-head h2 { font-size: 15px; min-width: 0; }
+.xcard-head .pmark { width: 32px; height: 32px; border-radius: 9px; font-size: 12px; }
+.xcard-big { font-size: 24px; font-weight: 650; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xcard-line { min-height: 22px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.xcard-line.ellipsis { display: block; line-height: 22px; }
+.xcard-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 6px 0 0; padding-top: 10px; border-top: 1px solid var(--line); align-self: end; }
+.xcard-stats dt { color: var(--muted); font-size: 12px; } .xcard-stats dd { margin: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+a.link { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; } a.link:hover { color: var(--muted); }
+.psp-notes:first-child { padding-top: 14px; }
+.back { display: inline-block; margin-bottom: 10px; color: var(--muted); text-decoration: none; font-size: 13px; } .back:hover { color: var(--ink); text-decoration: underline; }
+tr.sum td { background: var(--bg); }
+.books-status { margin: 8px 0 0; }
+/* a card-style banner for what needs a person (bad) or is only waiting (info) */
+.banner { display: flex; align-items: center; gap: 16px; margin-top: 14px; padding: 14px 18px; border-radius: 12px; border: 1px solid var(--line); border-left: 4px solid var(--info); background: var(--panel); }
+.banner.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+.banner.bad strong { color: var(--bad); }
+.banner-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.banner-body .small { color: var(--ink); opacity: .85; }
+.banner .btn { flex-shrink: 0; }
+.psp-body.one { grid-template-columns: minmax(0, 1fr); }
 .psp-body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 .panel { padding: 16px 20px 20px; min-width: 0; } .panel + .panel { border-left: 1px solid var(--line); background: var(--bg); }
-.panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.panel h2, .panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 table.ch th { padding: 6px 10px 8px 0; } table.ch td { padding: 8px 10px 8px 0; border-bottom: 0; }
 table.ch tr.grp td { border-top: 1px solid var(--line); }
 .chop { display: inline-flex; flex-direction: column; gap: 2px; align-items: flex-start; }
