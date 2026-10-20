@@ -24,7 +24,7 @@ export async function setup(over: Record<string, unknown> = {}, tenantInput: Rec
 		if (body !== undefined) headers['content-type'] = 'application/json';
 		const res = await handle(new Request(`https://gw.test${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), e.env, ctx);
 		await settle();
-		return { status: res.status, body: (await res.json().catch(() => null)) as any };
+		return { status: res.status, headers: res.headers, body: (await res.json().catch(() => null)) as any };
 	};
 	/** another product on the same gateway */
 	const addTenant = async (id: string, input: Record<string, unknown> = {}) => {

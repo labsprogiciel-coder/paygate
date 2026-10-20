@@ -5,6 +5,8 @@ interface __BaseEnv_Env {
 	DB: D1Database;
 	CF_VERSION_METADATA: WorkerVersionMetadata;
 	ASSETS: Fetcher;
+	WRITE_LIMIT: RateLimit;
+	READ_LIMIT: RateLimit;
 	LIVE: "false";
 	PROVIDER_MODE: "pawapay";
 	PAWAPAY_BASE_URL: "https://api.sandbox.pawapay.io";

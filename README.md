@@ -61,6 +61,5 @@ npm run check                         # tsc
 
 ## Not done yet
 
-- No per-tenant rate limiting; abuse guards are the provider's and the per-tenant `max_amount`.
 - No client SDK; [`src/signing.ts`](src/signing.ts) is written to be copied for webhook verification.
 - Not tested against the live pawaPay or PI-SPI sandboxes: the adapters are ported from Relay's code, which was, and are tested here against stubs that answer as those providers do. Run `docs/operations.md` → "Before going live" first.

@@ -102,4 +102,4 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 
 - One operator key; no UI.
 - A tenant's webhook is delivered from the cron and after each request, so a quiet gateway delivers within a minute at worst.
-- Reading a payment at most every 4 seconds per payment reaches the provider; there is no per-tenant rate limit yet.
+- Reading a payment at most every 4 seconds per payment reaches the provider. Each tenant has 60 writes and 600 reads a minute on `/v1` (`ratelimits` in `wrangler.jsonc`, keyed on the tenant id, counted per Cloudflare location); change the limits there and deploy. If the limiter fails, requests go through.

@@ -60,6 +60,11 @@
   },
   // the deployed version, so Sentry can tell which release an error came from
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  // Per-tenant budgets on /v1 (src/ratelimit.ts), keyed on the tenant id. period is 10 or 60 seconds. Counted per Cloudflare location.
+  "ratelimits": [
+    { "name": "WRITE_LIMIT", "namespace_id": "2401", "simple": { "limit": 60, "period": 60 } },
+    { "name": "READ_LIMIT", "namespace_id": "2402", "simple": { "limit": 600, "period": 60 } }
+  ],
   "kv_namespaces": [
     { "binding": "CACHE", "id": "a65d284118964b7782cc2d58132d4863" }
   ]
