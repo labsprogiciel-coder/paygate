@@ -32,7 +32,7 @@ async function api(method, path, body) {
 	const data = await res.json().catch(() => ({}));
 	if (res.status === 401) throw new AuthError(data?.error?.message || 'Unauthorized');
 	if (res.status === 403 && data?.error?.code === 'not_operator') throw new NotOperator(data.error.userId);
-	if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+	if (!res.ok) throw Object.assign(new Error(data?.error?.message || `HTTP ${res.status}`), { code: data?.error?.code ?? null });
 	return data;
 }
 
@@ -79,7 +79,36 @@ const tenantMark = (t, size = 20) => {
 /** A tenant as a mark and a name, from its id. */
 const tenantChip = (id) => { if (!id) return null; const t = TENANTS.get(id); return h('span', { class: 'chan tchip', title: id }, tenantMark(t ?? { id }), t?.name || id); };
 
-const toast = (m) => { const t = h('div', { class: 'toast', role: 'status' }, m); document.body.append(t); setTimeout(() => t.remove(), 2600); };
+/**
+ * Toasts stack in one live region, newest at the bottom, so two never sit on top of each other. A success ("Saved") fades after a few
+ * seconds; an error stays until it is dismissed, and is announced at once (role=alert).
+ */
+function toast(m, { error = false } = {}) {
+	let stack = document.querySelector('.toasts');
+	if (!stack) { stack = h('div', { class: 'toasts', 'aria-live': 'polite' }); document.body.append(stack); }
+	const t = h('div', { class: `toast${error ? ' bad' : ''}`, role: error ? 'alert' : null }, h('span', { class: 'grow' }, m),
+		error ? h('button', { class: 'toast-x', 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×') : null);
+	stack.append(t);
+	if (!error) setTimeout(() => t.remove(), 4000);
+}
+/**
+ * Every button that calls the API goes through this: the button is disabled and marked busy, says what it is doing, and comes back when the
+ * call is done. An error is shown next to the action (`errorIn`), or else as a toast that stays; `onError` may claim it first (to put it
+ * under a form field) by returning true. A session that ended goes back to sign-in.
+ */
+async function act(e, fn, { busy = 'Working…', errorIn, onError } = {}) {
+	const b = e.currentTarget, text = b.textContent;
+	b.disabled = true; b.setAttribute('aria-busy', 'true'); b.textContent = busy;
+	if (errorIn) put(errorIn);
+	try { return await fn(); }
+	catch (x) {
+		if (x instanceof AuthError) return signOut('Session ended. Sign in again.');
+		if (x instanceof NotOperator) return notOperator(x.userId);
+		if (onError?.(x)) return;
+		if (errorIn?.isConnected) put(errorIn, h('div', { class: 'alert bad', role: 'alert' }, x.message));
+		else toast(x.message, { error: true });
+	} finally { b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = text; }
+}
 
 /**
  * What needs a person, as toasts that stay until dismissed or acted on. A dismissed one stays away for this tab until what it says changes
@@ -102,7 +131,7 @@ function notices(items) {
 	}));
 }
 const clearNotices = () => document.querySelector('.notices')?.replaceChildren();
-const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead') } };
+const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead', { error: true }) } };
 
 // ---- overlays -------------------------------------------------------------------------------------------------------------------
 let uidN = 0;
@@ -156,8 +185,9 @@ function secretModal(title, note, value) {
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => copy(value) }, 'Copy'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 function confirmModal(title, text, label, onYes) {
-	const m = overlay([h('h2', {}, title), h('p', {}, text), h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-		h('button', { class: 'btn danger solid', onclick: async (e) => { e.target.disabled = true; try { await onYes(); m.close() } catch (err) { e.target.disabled = false; toast(err.message) } } }, label))], { center: true });
+	const err = h('div');
+	const m = overlay([h('h2', {}, title), h('p', {}, text), err, h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
+		h('button', { class: 'btn danger solid', onclick: (e) => act(e, async () => { await onYes(); m.close(); }, { busy: `${label}…`, errorIn: err }) }, label))], { center: true });
 }
 const field = (label, input, hint) => h('div', { class: 'field' }, h('label', {}, label, hint ? h('small', {}, ` ${hint}`) : null), input);
 
@@ -413,9 +443,9 @@ function booksSection(b) {
 	return h('section', { class: 'books mt22' },
 		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
 			h('button', { class: 'btn', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
-			h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; try { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); } catch (x) { e.target.disabled = false; toast(x.message) } } }, 'Rebuild from payments')),
+			h('button', { class: 'btn', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments')),
 		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status,
-			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: async (e) => { e.currentTarget.disabled = true; try { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); } catch (x) { e.currentTarget.disabled = false; toast(x.message) } } }, 'Retry stuck postings')] : null),
+			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings')] : null),
 		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
 			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }
@@ -425,11 +455,9 @@ function adjustModal(pools) {
 	const err = h('div');
 	const m = overlay([h('h2', {}, 'Book an adjustment'), h('p', { class: 'muted' }, 'Money in a wallet that belongs to no product: positive for float the studio put in, negative for fees or losses taken out. It cannot be edited later; book the opposite to undo it.'),
 		field('Pool', f.pool), field('Amount', f.amount, '(FCFA)'), field('What is it', f.note), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try { await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route(); }
-			catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-		} }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: (e) => act(e, async () => {
+			await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route();
+		}, { busy: 'Booking…', errorIn: err }) }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
 	f.amount.focus();
 }
 
@@ -550,10 +578,9 @@ function resolveModal(p, outcomes, done) {
 	const m = overlay([h('h2', {}, 'Resolve payment'), h('p', { class: 'muted' }, 'This overrides the gateway and notifies the tenant by webhook. It cannot be undone.'),
 		field('Outcome', outcome), field('Note', note, '(required, kept in the history)'), err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-			h('button', { class: 'btn primary', onclick: async (e) => {
+			h('button', { class: 'btn primary', onclick: (e) => {
 				if (!note.value.trim()) { put(err, h('div', { class: 'alert bad' }, 'A note is required.')); return; }
-				e.target.disabled = true;
-				try { const np = await api('POST', `/admin/payments/${p.id}/resolve`, { outcome: outcome.value, note: note.value }); m.close(); toast('Resolved'); await done(np); } catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
+				return act(e, async () => { const np = await api('POST', `/admin/payments/${p.id}/resolve`, { outcome: outcome.value, note: note.value }); m.close(); toast('Resolved'); await done(np); }, { busy: 'Resolving…', errorIn: err });
 			} }, 'Resolve'))], { center: true, dirty: () => !!note.value.trim() });
 }
 
@@ -624,9 +651,7 @@ function tenantForm(t, taken = []) {
 		f.id.addEventListener('input', () => { idTouched = f.id.value !== ''; f.id.value = f.id.value.toLowerCase(); checkId() });
 		checkId();
 	}
-	const save = h('button', { class: 'btn primary', onclick: async (e) => {
-		e.target.disabled = true;
-		try {
+	const save = h('button', { class: 'btn primary', onclick: (e) => act(e, async () => {
 			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
 			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); tenantsAt = 0; route(); return; }
 			const id = f.id.value.trim();
@@ -634,8 +659,7 @@ function tenantForm(t, taken = []) {
 			tenantsAt = 0;
 			m.close(); route();
 			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
-		} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-	} }, t ? 'Save' : 'Create tenant');
+	}, { busy: t ? 'Saving…' : 'Creating…', errorIn: err }) }, t ? 'Save' : 'Create tenant');
 	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint), logoField,
 		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
 		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
@@ -649,7 +673,7 @@ function tenantForm(t, taken = []) {
 async function connectModal(id) {
 	let key, secret;
 	try { [key, secret] = await Promise.all([api('POST', `/admin/tenants/${id}/keys`, { label: 'default' }), api('GET', `/admin/tenants/${id}/webhook-secret`)]) }
-	catch (x) { toast(`Tenant created, but: ${x.message}`); return tenantDrawer(id) }
+	catch (x) { toast(`Tenant created, but the key or secret could not be fetched: ${x.message}. Create a key from the tenant.`, { error: true }); return tenantDrawer(id) }
 	const row = (label, value, note) => [h('label', {}, label, note ? h('small', {}, ` ${note}`) : null), h('div', { class: 'copyrow' }, h('code', { class: 'secret' }, value), h('button', { class: 'btn sm', onclick: () => copy(value) }, 'Copy'))];
 	const m = overlay([h('h2', {}, `${id} is ready to connect`), h('p', { class: 'muted' }, 'Give these to the product. The API key is shown only this once: only its hash is stored.'),
 		row('API key', key.key, '(Authorization: Bearer …)'), row('Webhook signing secret', secret.secret, '(can be shown again)'),
@@ -667,9 +691,9 @@ async function tenantDrawer(id) {
 				books ? [h('dt', {}, 'Holds'), h('dd', {}, owns.length ? owns.map((x) => h('div', {}, h('strong', { class: x.available < 0 ? 'bad-text' : null }, fmtAmount(x.available)), ` in ${x.pool}`, x.held ? h('span', { class: 'muted' }, ` · ${fmtAmount(x.held)} held`) : null)) : h('span', { class: 'muted' }, 'nothing yet'))] : null)),
 			h('div', { class: 'actions left mb20' },
 				h('button', { class: 'btn', onclick: () => tenantForm(t) }, 'Edit'),
-				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: () => {
+				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: (e) => {
 					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); route(); };
-					t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : go();
+					return t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : act(e, go, { busy: 'Reactivating…' });
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
 			h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', onclick: () => newKey(id, render) }, 'New key')),
 			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: '' }],
@@ -678,18 +702,17 @@ async function tenantDrawer(id) {
 				'No keys yet.'),
 			h('h2', { class: 'mt22' }, 'Webhook signing secret'),
 			h('div', { class: 'actions left mt0' },
-				h('button', { class: 'btn', onclick: async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); } }, 'Reveal'),
+				h('button', { class: 'btn', onclick: (e) => act(e, async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); }, { busy: 'Revealing…' }) }, 'Reveal'),
 				h('button', { class: 'btn danger', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
 	};
 	try { await render() } catch (e) { d.fill(h('h2', {}, 'Tenant'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
 function newKey(tenantId, after) {
-	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' });
-	const m = overlay([h('h2', {}, 'New API key'), field('Label', label, '(optional)'), h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-		h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try { const k = await api('POST', `/admin/tenants/${tenantId}/keys`, { label: label.value.trim() || undefined }); m.close(); secretModal('API key created', 'Copy it now. Only its hash is stored, so it cannot be shown again.', k.key); await after(); } catch (x) { e.target.disabled = false; toast(x.message); }
-		} }, 'Create'))], { center: true });
+	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' }), err = h('div');
+	const m = overlay([h('h2', {}, 'New API key'), field('Label', label, '(optional)'), err, h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
+		h('button', { class: 'btn primary', onclick: (e) => act(e, async () => {
+			const k = await api('POST', `/admin/tenants/${tenantId}/keys`, { label: label.value.trim() || undefined }); m.close(); secretModal('API key created', 'Copy it now. Only its hash is stored, so it cannot be shown again.', k.key); await after();
+		}, { busy: 'Creating…', errorIn: err }) }, 'Create'))], { center: true });
 }
 
 // ---- failed webhooks ------------------------------------------------------------------------------------------------------------
@@ -716,7 +739,7 @@ function feedItem(e, { compact = false, onChange } = {}) {
 		meta = [payLink(e.paymentId), e.attempts ? plural(e.attempts, 'attempt') : 'not sent yet', e.detail];
 	}
 	const retry = e.source === 'webhook' && e.status !== 'delivered' && !compact
-		? h('button', { class: 'btn sm', onclick: async (ev) => { ev.target.disabled = true; try { await api('POST', `/admin/webhooks/${e.id}/retry`); toast('Queued for delivery'); onChange?.() } catch (x) { ev.target.disabled = false; toast(x.message) } } }, e.status === 'dead' ? 'Retry' : 'Send now')
+		? h('button', { class: 'btn sm', onclick: (ev) => act(ev, async () => { await api('POST', `/admin/webhooks/${e.id}/retry`); toast('Queued for delivery'); onChange?.() }, { busy: 'Queuing…' }) }, e.status === 'dead' ? 'Retry' : 'Send now')
 		: null;
 	const body = !compact && e.body ? h('details', { class: 'ev-body' }, h('summary', {}, e.source === 'callback' ? 'Body as received' : 'Payload'), h('pre', {}, pretty(e.body))) : null;
 	return h('li', { class: `ev${e.problem ? ' problem' : ''}` },
