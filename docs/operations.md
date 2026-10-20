@@ -48,8 +48,8 @@ Every money movement is also booked as a double-entry posting in `ledger_posting
 
 - **Copy to Formance (optional).** Set the var or secret `FORMANCE_BASE_URL` (the stack, e.g. `https://<org>-<stack>.<region>.formance.cloud`) and the secrets `FORMANCE_CLIENT_ID` / `FORMANCE_CLIENT_SECRET`. Optional: `FORMANCE_LEDGER` (default `paygate`, created on first use) and `FORMANCE_TOKEN_URL` (default `/api/auth/oauth/token`). The cron sends unposted postings every minute; each posting's reference is the Formance reference, so a retry never books twice. If Formance is down, payments are untouched and postings wait.
 - **Records, does not refuse (yet).** Every script allows an overdraft, so a product paying out more than it collected shows a **negative** balance instead of being refused. Enforcing it (Formance refusing the hold) is the next step, once the books have run clean.
-- **First run:** after `npm run db:migrate`, open Providers → Books → **Rebuild from payments** to book the history. Then book the studio's float as an adjustment (**Book an adjustment…**, e.g. "opening float", positive), so each wallet's difference comes to zero. Book provider fees the same way (negative). An adjustment can't be edited: book the opposite to undo one.
-- **Formance refusing us** (401, 403, 429, 5xx) stops the sweep until the next minute, so postings don't lose their tries; a 401 fetches a new token. A posting that still fails 10 times is left for a person: fix the access, then Providers → Books → **Retry stuck postings**.
+- **First run:** after `npm run db:migrate`, open **Wallets** → **Rebuild from payments** to book the history. Then book the studio's float as an adjustment (**Book an adjustment…**, e.g. "opening float", positive), so each wallet's difference comes to zero. Book provider fees the same way (negative). An adjustment can't be edited: book the opposite to undo one.
+- **Formance refusing us** (401, 403, 429, 5xx) stops the sweep until the next minute, so postings don't lose their tries; a 401 fetches a new token. A posting that still fails 10 times is left for a person: fix the access, then **Wallets** → **Retry stuck postings** (the banner at the top).
 - **Every day at 03:00 UTC** the cron alerts when a wallet and its books differ, when postings are stuck on their way to Formance (after 10 tries), or when Formance and the journal disagree.
 
 ## Add a product
@@ -135,7 +135,7 @@ Who decides: the operator on call proposes it; the studio lead agrees before a p
    - **Callbacks** for those payments raise "callback for a payment the gateway does not know"; list them in Events (source: callbacks) to see what was in flight.
    - **Status changes** on older payments: the reconcile cron asks pawaPay again about open payments every minute, and about failed or expired ones of the last day every hour.
    - **Tenant edits, keys, adjustments**: redo them by hand (operators know what they changed; the alert channel has the rest).
-4. Providers → Books → **Rebuild from payments**, then check every pool's difference is 0 (book adjustments redone in 3).
+4. **Wallets** → **Rebuild from payments**, then check every pool's difference is 0 (book adjustments redone in 3).
 
 ### Drill
 

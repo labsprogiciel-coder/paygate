@@ -306,13 +306,15 @@ const skFeed = (n = 8, compact = false) => busy(h('ul', { class: `feed${compact 
 	Array.from({ length: n }, (_, i) => h('li', { class: 'ev' }, h('span', { class: 'sk w-time' }), h('span', { class: 'sk w-src' }),
 		h('div', { class: 'ev-main' }, bar(i + 1, 'sk-l'), bar(i + 4, 'sk-s')), h('span', { class: 'sk sk-pill' })))));
 const skTiles = () => busy(h('div', { class: 'tiles' }, [0, 1, 2, 3].map((i) => h('div', { class: 'tile' }, bar(i, 'sk-s'), h('span', { class: 'sk sk-big' }), bar(i + 2, 'sk-s')))));
+const skCards = (n) => busy(h('div', { class: 'cards' }, Array.from({ length: n }, (_, i) => h('div', { class: 'xcard' }, bar(i, 'sk-l'), h('span', { class: 'sk sk-big' }), bar(i + 1, 'sk-s'), bar(i + 2, 'sk-l')))));
 const skHead = () => busy(h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))));
 const skDrawer = () => busy(h('div', { class: 'bar' }, h('span', { class: 'sk sk-h1' })), h('div', { class: 'card' }, h('dl', { class: 'kv' },
 	Array.from({ length: 8 }, (_, i) => [h('dt', {}, bar(i, 'sk-s')), h('dd', {}, bar(i + 3))]))), h('div', { class: 'card' }, bar(1), bar(4), bar(2)));
 const SKELETON = {
 	overview: () => [skHead(), skTiles(), h('div', { class: 'cols mt22' }, skList(6), skFeed(6, true))],
-	providers: () => [skHead(), ...[0, 1].map((i) => busy(h('section', { class: 'psp' }, h('header', { class: 'psp-head' }, h('span', { class: 'sk sk-sq' }), h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))),
-		h('div', { class: 'psp-body' }, h('div', { class: 'panel' }, Array.from({ length: 5 }, (_, r) => bar(r + i, 'sk-l'))), h('div', { class: 'panel' }, Array.from({ length: 3 }, (_, r) => bar(r + i + 2, 'sk-l')))))))],
+	wallets: (id) => id ? [skHead(), skTiles(), skTable(['Product', 'Available', 'Held', 'Share'], 3)] : [skHead(), skCards(4)],
+	providers: (id) => id ? [skHead(), ...[0].map((i) => busy(h('section', { class: 'psp' }, h('header', { class: 'psp-head' }, h('span', { class: 'sk sk-sq' }), h('div', { class: 'grow' }, h('span', { class: 'sk sk-h1' }))),
+		h('div', { class: 'psp-body' }, h('div', { class: 'panel' }, Array.from({ length: 5 }, (_, r) => bar(r + i, 'sk-l'))), h('div', { class: 'panel' }, Array.from({ length: 3 }, (_, r) => bar(r + i + 2, 'sk-l')))))))] : [skHead(), skCards(2)],
 	payments: () => [skHead(), h('div', { class: 'mb20' }, skTiles()), skTable(['When', 'Tenant', 'Type', 'PSP', 'Channel', 'Origin', 'Reference', 'Counterparty', 'Amount', 'Status'], 10)],
 	events: () => [skHead(), skFeed(10)],
 	tenants: () => [skHead(), skTable(['Id', 'Name', 'Status', 'Webhook', 'Max payment', 'Created'], 5)],
@@ -349,7 +351,7 @@ function pager({ fetch, render, skeleton, noun = 'rows' }) {
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
-const PAGES = { overview: ['Overview', overview], providers: ['Providers', providersPage], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
+const PAGES = { overview: ['Overview', overview], wallets: ['Wallets', walletsPage], providers: ['Providers', providersPage], payments: ['Payments', payments], events: ['Events', events], tenants: ['Tenants', tenants] };
 let attention = { unknown: 0, problems: 0 };
 
 let started = false;
@@ -381,17 +383,17 @@ function buildShell() {
 async function route() {
 	closeAll();
 	clearNotices(); // the overview puts back what still needs a person
-	const name = (location.hash.slice(2) || 'overview').split('?')[0];
+	const [name, param] = (location.hash.slice(2) || 'overview').split('?')[0].split('/').map((x) => x && decodeURIComponent(x));
 	const page = PAGES[name] ? name : 'overview';
 	if (!shell?.root.isConnected) buildShell(); // first time, or after sign-in replaced the app
 	for (const a of shell.nav.children) a.setAttribute('aria-current', a.getAttribute('href') === `#/${page}` ? 'page' : 'false');
-	const main = h('main', { class: 'main' }, SKELETON[page]());
+	const main = h('main', { class: 'main' }, SKELETON[page](param));
 	shell.main.replaceWith(main); shell.main = main;
 	pageReload = null;
 	try {
 		await loadTenants();
-		await PAGES[page][1](main);
-		if (shell.main === main) pageReload ??= () => PAGES[page][1](main);
+		await PAGES[page][1](main, param);
+		if (shell.main === main) pageReload ??= () => PAGES[page][1](main, param);
 		refreshAttention();
 	} catch (e) {
 		if (e instanceof AuthError) return signOut('Session ended. Sign in again.');
@@ -452,7 +454,7 @@ async function overview(main) {
 	const floats = (flt.rows || []).filter((r) => r.status === 'critical' || r.status === 'low');
 	for (const [status, level] of [['critical', 'bad'], ['low', 'warn']]) {
 		const rows = floats.filter((r) => r.status === status);
-		if (rows.length) todo.push({ key: `float-${status}:${rows.map((r) => r.country).join(',')}`, level, title: `Float ${status}: ${rows.map((r) => r.country).join(', ')}`, why: `${rows[0].reasons.join(' ') || 'Below the minimum float'} (${fmtAmount(flt.floor)}).`, href: '#/providers', action: 'View' });
+		if (rows.length) todo.push({ key: `float-${status}:${rows.map((r) => r.country).join(',')}`, level, title: `Float ${status}: ${rows.map((r) => r.country).join(', ')}`, why: `${rows[0].reasons.join(' ') || 'Below the minimum float'} (${fmtAmount(flt.floor)}).`, href: '#/wallets', action: 'View' });
 	}
 	if (att.deadWebhooks) todo.push({ key: `dead:${att.deadWebhooks}`, level: 'warn', title: `${plural(att.deadWebhooks, 'webhook')} not delivered`, why: 'A product was not told about a payment.', href: '#/events?source=webhook&problems=1', action: 'Retry' });
 	const db = att.database?.bytes != null ? att.database : null;
@@ -505,43 +507,126 @@ const chName = (c) => c.operator === 'bank' ? (c.code === 'PISPI_RTP' ? 'Bank ·
 const flag = (iso3) => COUNTRY[iso3] ? h('img', { class: 'flag', src: `/country/${COUNTRY[iso3][0]}.png`, alt: '', width: 20, height: 20 }) : null;
 const ENV = { Live: 's-completed', Sandbox: 's-low', Simulated: 's-low', Simulator: 's-low', Off: 's-idle' };
 
-async function providersPage(main) {
-	const [prov, books] = await Promise.all([api('GET', '/admin/providers'), api('GET', '/admin/ledger').catch((e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; })]);
-	put(main, head('Providers', 'Every payment provider the gateway uses: what each channel can do on the account right now, and the accounts money is paid from. Figures are for the last 24 hours.', refreshButton()),
-		prov.data.map((p) => pspSection(p, prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi'))), prov.floor)),
-		books ? booksSection(books) : null);
+const pspRows = (prov, p) => prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi')));
+const PSP_SUB = 'Every payment provider the gateway uses and what each channel can do on the account right now. Figures are for the last 24 hours.';
+async function providersPage(main, id) {
+	const prov = await api('GET', '/admin/providers');
+	if (id) {
+		const p = prov.data.find((x) => x.id === id);
+		return put(main, back('#/providers', 'Providers'), p ? [head(h('span', { class: 'chan' }, pspMark(p, 32), p.name, h('span', { class: `mode ${ENV[p.environment] || 's-idle'}` }, p.environment), badge(p.active ? 'active' : 'idle')),
+			[p.role, p.endpoint ? [' · ', h('span', { class: 'mono' }, p.endpoint)] : null, '. Figures are for the last 24 hours.'], refreshButton()), pspSection(p, pspRows(prov, p))] : h('div', { class: 'alert bad' }, `No provider ${id}.`));
+	}
+	put(main, head('Providers', PSP_SUB, refreshButton()), h('div', { class: 'cards' }, prov.data.map((p) => pspCard(p, pspRows(prov, p)))));
 }
+/** What a provider did in the last 24 hours, from the payments rows the API groups for it. */
+function pspStats(rows) {
+	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
+	return { inn: sum((r) => r.kind === 'collection' && r.status === 'completed'), out: sum((r) => r.kind === 'disbursement' && r.status === 'completed'),
+		open: sum((r) => r.status === 'processing'), bad: sum((r) => r.status === 'failed' || r.status === 'unknown') };
+}
+const pspMark = (p, size = 44) => PSP_LOGO[p.id] ? h('img', { class: 'pmark', src: PSP_LOGO[p.id], alt: '', width: size, height: size }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : p.id.slice(0, 2));
+/**
+ * A provider as one card of the grid: the same lines in every card whatever the provider, each one line long, so the cards line up.
+ * Everything that varies in length (channels, notes, accounts) is on its detail page.
+ */
+function pspCard(p, rows) {
+	const { inn, out, open, bad } = pspStats(rows);
+	const ops = (p.channels || []).flatMap((c) => [c.collect, c.payout]).filter(Boolean);
+	const closed = ops.filter((x) => x.status === 'CLOSED').length;
+	const line = !p.channels ? h('span', { class: 'bad-text' }, 'Channels could not be read')
+		: [`${plural(new Set(p.channels.map((c) => c.country)).size, 'country', 'countries')} · ${plural(p.channels.length, 'channel')}`, closed ? h('span', { class: 'bad-text' }, ` · ${closed} closed`) : null];
+	const stat = (label, value, warn) => h('div', {}, h('dt', {}, label), h('dd', { class: `num${warn ? ' bad-text' : ''}` }, value));
+	return h('a', { class: `xcard${p.active ? '' : ' off'}`, href: `#/providers/${encodeURIComponent(p.id)}`, 'data-key': `psp:${p.id}` },
+		h('div', { class: 'xcard-head' }, pspMark(p, 32), h('h2', { class: 'm0 ellipsis' }, p.name), h('span', { class: 'grow' }), badge(p.active ? 'active' : 'idle')),
+		h('div', { class: 'xcard-line ellipsis' }, h('span', { class: `mode ${ENV[p.environment] || 's-idle'}` }, p.environment), ' ', p.role),
+		h('div', { class: 'xcard-line ellipsis muted' }, line),
+		h('dl', { class: 'xcard-stats' }, stat('Collected', fmtAmount(inn.amount)), stat('Paid out', fmtAmount(out.amount)), stat('In progress', String(open.n)), stat('Failed / unknown', String(bad.n), bad.n > 0)));
+}
+const back = (href, label) => h('a', { class: 'back', href }, `← ${label}`);
 
 // ---- books ----------------------------------------------------------------------------------------------------------------------
 // Who owns the money in each wallet: the journal per product, beside what the wallet really holds and what Formance has.
 const POOL_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso', PISPI: 'PI-SPI bank account' };
 const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
-function booksSection(b) {
-	const o = b.outbox;
-	const status = !b.enabled ? 'Kept in the gateway only: set FORMANCE_BASE_URL to copy it to a Formance ledger.'
-		: b.formanceError ? `Formance could not be read: ${b.formanceError}`
-		: o.stuck ? `${plural(o.stuck, 'posting')} stuck on the way to Formance (ledger ${b.ledger}).`
-		: o.pending ? `${plural(o.pending, 'posting')} waiting for Formance (ledger ${b.ledger}).` : `Copied to Formance (ledger ${b.ledger}), nothing waiting.`;
-	const rows = b.pools.map((p) => h('tr', {},
-		h('td', {}, h('strong', {}, p.pool), h('div', { class: 'muted small' }, POOL_NAME[p.pool] || '')),
-		h('td', {}, p.tenants.length ? h('div', { class: 'book-tenants' }, p.tenants.map((t) => h('div', { class: 'chan' }, tenantChip(t.tenant), h('span', { class: `num${t.available < 0 ? ' bad-text' : ''}` }, fmtAmount(t.available)), t.held ? h('span', { class: 'muted small' }, `${fmtAmount(t.held)} held`) : null))) : h('span', { class: 'muted' }, 'nothing booked')),
-		h('td', { class: 'num' }, fmtAmount(p.unallocated)),
-		h('td', { class: 'num strong' }, fmtAmount(p.total)),
-		h('td', { class: 'num' }, p.wallet == null ? '–' : fmtAmount(p.wallet)),
-		h('td', { class: `num${p.difference ? ' bad-text' : ''}` }, p.difference == null ? '–' : p.difference === 0 ? 'balanced' : signed(p.difference)),
-		b.enabled ? h('td', { class: `num${p.formance != null && p.formance !== p.total ? ' bad-text' : ''}` }, p.formance == null ? '–' : fmtAmount(p.formance)) : null));
-	return h('section', { class: 'books mt22' },
-		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
-			h('button', { class: 'btn', 'data-key': 'adjust', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
-			h('button', { class: 'btn', 'data-key': 'rebuild', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); await reloadPage(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments')),
-		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status,
-			o.stuck ? [' ', h('button', { class: 'btn sm', 'data-key': 'retry-stuck', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); await reloadPage(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings')] : null),
-		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
-			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
+const WALLETS_SUB = 'What each wallet holds and whether the books account for all of it. Open a wallet to see which product owns what.';
+async function walletsPage(main, id) {
+	const [b, prov] = await Promise.all([api('GET', '/admin/ledger'), api('GET', '/admin/providers').catch((e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; })]);
+	const accounts = Object.fromEntries((prov?.data || []).flatMap((p) => p.accounts.filter((a) => a.kind !== 'alias').map((a) => [a.country, a])));
+	const floor = prov?.floor ?? null;
+	if (id) {
+		const p = b.pools.find((x) => x.pool === id);
+		return put(main, back('#/wallets', 'Wallets'), p ? walletDetail(b, p, accounts[p.pool], floor) : h('div', { class: 'alert bad' }, `No wallet ${id}.`));
+	}
+	put(main, head('Wallets', WALLETS_SUB, adjustButton(b.pools.map((p) => p.pool)), rebuildButton(), refreshButton()), syncStatus(b),
+		b.pools.length ? h('div', { class: 'cards' }, b.pools.map((p) => walletCard(b, p, accounts[p.pool], floor)))
+			: h('div', { class: 'card empty' }, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }
-function adjustModal(pools) {
+const poolMark = (pool) => pool === 'PISPI' ? h('img', { class: 'flag', src: '/providers/pispi.png', alt: '', width: 20, height: 20 }) : flag(pool);
+const adjustButton = (pools, pool) => h('button', { class: 'btn', 'data-key': 'adjust', onclick: () => adjustModal(pools, pool) }, 'Book an adjustment…');
+const rebuildButton = () => h('button', { class: 'btn', 'data-key': 'rebuild', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); await reloadPage(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments');
+/** Whether the books reached Formance: a banner when a person must act or wait, a quiet line when all is well. */
+function syncStatus(b) {
+	const o = b.outbox;
+	const banner = (level, title, detail, action) => h('div', { class: `banner ${level}`, role: level === 'bad' ? 'alert' : 'status' },
+		h('div', { class: 'banner-body' }, h('strong', {}, title), h('div', { class: 'small' }, detail)), action);
+	if (b.enabled && b.formanceError) return banner('bad', 'Formance could not be read', `${b.formanceError}. The books are safe in the gateway; the Formance column is missing until it answers.`);
+	if (b.enabled && o.stuck) return banner('bad', `${plural(o.stuck, 'posting')} stuck on the way to Formance`,
+		`They failed 10 times and are no longer retried. Fix what stopped them (credentials, scopes, the ledger ${b.ledger}), then send them again.`,
+		h('button', { class: 'btn', 'data-key': 'retry-stuck', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); await reloadPage(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings'));
+	if (b.enabled && o.pending) return banner('info', `${plural(o.pending, 'posting')} waiting for Formance`, `They go out with the next sweep, within a minute (ledger ${b.ledger}).`);
+	return h('p', { class: 'small muted books-status' }, b.enabled ? `Copied to Formance (ledger ${b.ledger}), nothing waiting.` : 'Kept in the gateway only: set FORMANCE_BASE_URL to copy it to a Formance ledger.');
+}
+/** The verdict on a wallet: do the books account for what it holds, and does Formance agree. */
+function walletVerdict(b, p, a) {
+	const unexplained = p.difference != null && p.difference !== 0, formanceOff = b.enabled && p.formance != null && p.formance !== p.total;
+	const low = a && a.status !== 'ok';
+	const badge_ = p.difference == null ? h('span', { class: 'badge s-idle' }, 'not checked') : unexplained ? h('span', { class: 'badge s-failed' }, `${signed(p.difference)} unexplained`) : h('span', { class: 'badge s-completed' }, 'balanced');
+	// one line, worst first
+	const note = low ? h('span', { class: 'bad-text' }, a.reasons?.[0] || 'Below the floor') : formanceOff ? h('span', { class: 'bad-text' }, `Formance has ${fmtAmount(p.formance)}`)
+		: a ? (a.coverDays == null ? 'No recent payouts' : `${a.coverDays} days of payouts covered`) : p.pool === 'PISPI' ? 'PI-SPI reports no balance' : 'No balance reported';
+	return { badge: badge_, note, warn: unexplained || formanceOff || low };
+}
+/**
+ * A wallet as one card of the grid: the same five lines in every card, each one line long, so the cards line up whatever the wallet holds.
+ * Who owns the money, the float and Formance are on the wallet's own page.
+ */
+function walletCard(b, p, a, floor) {
+	const v = walletVerdict(b, p, a);
+	const stat = (label, value) => h('div', {}, h('dt', {}, label), h('dd', { class: 'num' }, value));
+	return h('a', { class: `xcard${v.warn ? ' warn' : ''}`, href: `#/wallets/${encodeURIComponent(p.pool)}`, 'data-key': `wallet:${p.pool}` },
+		h('div', { class: 'xcard-head' }, poolMark(p.pool), h('h2', { class: 'm0 ellipsis' }, POOL_NAME[p.pool] || p.pool), h('span', { class: 'grow' }), h('span', { class: 'muted small mono' }, p.pool)),
+		h('div', { class: 'xcard-big num' }, p.wallet == null ? h('span', { class: 'muted' }, '–') : fmtAmount(p.wallet)),
+		h('div', { class: 'xcard-line' }, v.badge),
+		h('div', { class: 'xcard-line ellipsis small muted' }, v.note),
+		h('dl', { class: 'xcard-stats' }, stat('Books total', fmtAmount(p.total)), stat('Products', String(p.tenants.length))));
+}
+/** One wallet: what it holds, who owns it, the studio's float and Formance's copy. */
+function walletDetail(b, p, a, floor) {
+	const v = walletVerdict(b, p, a);
+	const owned = p.tenants.reduce((n, t) => n + t.available + (t.held || 0), 0);
+	const rows = [...p.tenants].sort((x, y) => (y.available + (y.held || 0)) - (x.available + (x.held || 0))).map((t) => h('tr', {},
+		h('td', {}, tenantChip(t.tenant)), h('td', { class: `num${t.available < 0 ? ' bad-text' : ''}` }, fmtAmount(t.available)), h('td', { class: 'num' }, t.held ? fmtAmount(t.held) : '–'),
+		h('td', { class: 'num' }, p.total ? `${Math.round(((t.available + (t.held || 0)) / p.total) * 100)} %` : '–')));
+	return [
+		head(h('span', { class: 'chan' }, poolMark(p.pool), POOL_NAME[p.pool] || p.pool), p.pool === 'PISPI' ? 'The PI-SPI bank account: money collected by bank transfer and QR code.' : `The pawaPay wallet in ${POOL_NAME[p.pool] || p.pool}: mobile money collected and paid out there.`,
+			adjustButton(b.pools.map((x) => x.pool), p.pool), refreshButton()),
+		syncStatus(b),
+		h('div', { class: 'tiles mt14' },
+			tile(p.pool === 'PISPI' ? 'In the bank account' : 'In the wallet', p.wallet == null ? '–' : fmtAmount(p.wallet), v.note, a && a.status !== 'ok' ? 'bad' : null),
+			tile('Books total', fmtAmount(p.total), `${fmtAmount(owned)} owned by products`),
+			tile('Unexplained', p.difference == null ? '–' : p.difference === 0 ? 'none' : signed(p.difference), p.difference ? 'book it as an adjustment once you know what it is' : 'the books account for every franc', p.difference ? 'bad' : null),
+			b.enabled ? tile('Formance', p.formance == null ? '–' : fmtAmount(p.formance), p.formance == null ? 'not read' : p.formance === p.total ? 'matches the books' : 'differs from the books', p.formance != null && p.formance !== p.total ? 'bad' : null)
+				: tile('Studio float', fmtAmount(p.unallocated), 'owned by no product')),
+		h('h2', { class: 'mt22' }, 'Who owns the money'),
+		table([{ label: 'Product' }, { label: 'Available', num: true }, { label: 'Held for payouts', num: true }, { label: 'Share of the books', num: true }], [
+			...rows,
+			h('tr', { class: 'sum' }, h('td', {}, h('span', { class: 'muted' }, 'Studio float (owned by no product)')), h('td', { class: 'num' }, fmtAmount(p.unallocated)), h('td', {}), h('td', { class: 'num' }, p.total ? `${Math.round((p.unallocated / p.total) * 100)} %` : '–')),
+		], 'Nothing booked in this wallet yet.'),
+		a ? h('p', { class: 'muted small mt14' }, [`Floor ${floor != null ? fmtAmount(floor) : '–'}`, a.committed ? `${fmtAmount(a.committed)} committed to ${plural(a.committedCount, 'payout')} in flight` : null].filter(Boolean).join(' · ')) : null];
+}
+function adjustModal(pools, pool) {
 	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
-	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p, selected: p === pool || null }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
 	const amount = moneyInput({ signed: true, hint: 'Whole FCFA, e.g. 500 000 or -1 200. Positive for money put in, negative for money taken out.' });
 	f.amount = amount.input; f.amount.required = true;
 	const rules = {
@@ -582,11 +667,8 @@ function moneyInput({ value = null, signed = false, hint }) {
 /** For act(): puts a server error that names a field under that field. `map` is { code: control } or a function of the error. */
 const fieldFor = (map) => (x) => { const el = typeof map === 'function' ? map(x) : map[x.code]; if (!el) return false; check([[el, x.message]]); return true; };
 
-function pspSection(p, rows, floor) {
-	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
-	const inn = sum((r) => r.kind === 'collection' && r.status === 'completed'), out = sum((r) => r.kind === 'disbursement' && r.status === 'completed');
-	const open = sum((r) => r.status === 'processing'), bad = sum((r) => r.status === 'failed' || r.status === 'unknown');
-	const mark = PSP_LOGO[p.id] ? h('img', { class: 'pmark', src: PSP_LOGO[p.id], alt: '', width: 44, height: 44 }) : h('span', { class: 'pmark mono-mark' }, p.id === 'sandbox' ? 'SB' : p.id.slice(0, 2));
+function pspSection(p, rows) {
+	const { inn, out, open, bad } = pspStats(rows);
 	const kpi = (label, value, sub, warn) => h('div', { class: 'kpi' }, h('div', { class: 'pl' }, label), h('div', { class: `kv-big${warn ? ' bad-text' : ''}` }, value), h('div', { class: 'ps' }, sub));
 
 	// within a country, channels with the same collection and payout terms share one row: their logos stack, the limits show once
@@ -608,28 +690,22 @@ function pspSection(p, rows, floor) {
 			})))
 		: h('div', { class: 'alert bad' }, `Could not read the channel configuration: ${p.channelsError}`);
 
-	const account = (a) => a.kind === 'alias'
-		? h('div', { class: 'acct' }, h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), a.label), h('span', { class: 'badge s-info' }, 'collections in')),
-			h('code', { class: 'acct-val' }, a.value), a.participant ? h('div', { class: 'muted small' }, `Participant ${a.participant}`) : null)
-		: h('div', { class: `acct${a.status !== 'ok' ? ' warn' : ''}` },
-			h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), COUNTRY[a.country]?.[1] || a.country), badge(a.status)),
-			h('div', { class: 'acct-bal' }, a.balance === null ? 'No wallet' : fmtAmount(a.balance)),
-			h('div', { class: 'muted small' }, [a.coverDays === null ? 'no recent payouts' : `${a.coverDays} days cover`, a.committed ? `${fmtAmount(a.committed)} committed (${a.committedCount})` : null, `floor ${fmtAmount(floor)}`].filter(Boolean).join(' · ')),
-			a.reasons?.map((x) => h('div', { class: 'bad-text small' }, x)));
+	// receiving aliases are configuration, so they stay here; wallet balances, floors and cover are on Wallets
+	const aliases = p.accounts.filter((a) => a.kind === 'alias'), wallets = p.accounts.length - aliases.length;
+	const alias = (a) => h('div', { class: 'acct' }, h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), a.label), h('span', { class: 'badge s-info' }, 'collections in')),
+		h('code', { class: 'acct-val' }, a.value), a.participant ? h('div', { class: 'muted small' }, `Participant ${a.participant}`) : null);
+	const side = p.id === 'pispi' || aliases.length;
 
 	return h('section', { class: `psp${p.active ? '' : ' off'}` },
-		h('header', { class: 'psp-head' }, mark,
-			h('div', { class: 'grow min0' }, h('h2', { class: 'm0 psp-name' }, p.name, ' ', h('span', { class: `mode ${ENV[p.environment] || 's-idle'}` }, p.environment)),
-				h('div', { class: 'muted small' }, p.role, p.endpoint ? [' · ', h('span', { class: 'mono' }, p.endpoint)] : null)),
-			badge(p.active ? 'active' : 'idle')),
 		p.notes.length ? h('div', { class: 'psp-notes' }, p.notes.map((n) => h('span', { class: 'tag' }, n))) : null,
 		h('div', { class: 'kpis' }, kpi('Collected', fmtAmount(inn.amount), plural(inn.n, 'payment')), kpi('Paid out', fmtAmount(out.amount), plural(out.n, 'payment')),
 			kpi('In progress', String(open.n), 'waiting'), kpi('Failed / unknown', String(bad.n), 'last 24 h', bad.n > 0)),
-		h('div', { class: 'psp-body' },
-			h('div', { class: 'panel' }, h('h3', {}, 'Channels'), channels),
-			h('div', { class: 'panel' }, h('h3', {}, p.id === 'pispi' ? 'Accounts' : 'Payout accounts'),
-				p.accounts.length ? h('div', { class: 'accts' }, p.accounts.map(account)) : null,
-				p.accountsNote ? h('p', { class: 'muted small m0' }, p.accountsNote) : null)));
+		h('div', { class: `psp-body${side ? '' : ' one'}` },
+			h('div', { class: 'panel' }, h('h2', {}, 'Channels'), channels,
+				wallets ? h('p', { class: 'muted small mt14 mb0' }, `Money is paid out from ${plural(wallets, 'wallet')}: balances, floors and cover are on `, h('a', { class: 'link', href: '#/wallets' }, 'Wallets'), '.') : null),
+			side ? h('div', { class: 'panel' }, h('h2', {}, 'Accounts'),
+				aliases.length ? h('div', { class: 'accts' }, aliases.map(alias)) : null,
+				p.accountsNote ? h('p', { class: 'muted small m0' }, p.accountsNote) : null) : null));
 }
 
 // ---- payments -------------------------------------------------------------------------------------------------------------------
