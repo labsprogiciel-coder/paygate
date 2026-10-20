@@ -58,6 +58,8 @@ npm run check                         # tsc
 | `src/sentry.ts`, `alerts.ts` | Error reporting to Sentry (scrubbed) and operator alerts |
 | `public/` | The operator console (static files: `index.html`, `console.js`, `console.css`), served at `/` by the Worker's assets; it only calls `/admin/*` |
 | `migrations/` | D1 schema |
+| `scripts/restore-drill.sh` | Restores a backup into a scratch database and proves Time Travel works (see docs/operations.md, Backups and restore) |
+| `.github/workflows/` | CI (typecheck and tests on every PR) and the weekly backup to R2 |
 
 ## Not done yet
 

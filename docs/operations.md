@@ -100,6 +100,47 @@ D1 allows 10 GB per database. The overview shows the current size; an alert goes
 
 The prune runs daily at 03:05 UTC in batches (`src/retention.ts`); a backlog is worked through over the following days.
 
+## Backups and restore
+
+| Layer | Covers | Set up |
+|---|---|---|
+| **D1 Time Travel** | Any minute of the last 30 days, restored in place | Built in |
+| **Weekly export to R2** (`.github/workflows/backup.yml`) | Older than 30 days; a copy outside D1; audit | Opt-in, below |
+
+### Turn on the weekly export
+
+1. `npx wrangler r2 bucket create paygate-backups` (private; no public access, no custom domain). In the dashboard, add a lifecycle rule on it that deletes objects after 365 days.
+2. Create an API token with **D1 Edit** and **Workers R2 Storage Edit** on the account. In GitHub → Settings → Secrets and variables → Actions: secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, variable `BACKUPS_ENABLED` = `true` (and `BACKUP_BUCKET` if the bucket has another name).
+3. Actions → Backup → **Run workflow** once, and check the object `d1/paygate-<date>.sql.gz` appears in the bucket.
+
+It runs every Sunday at 02:30 UTC. **D1 cannot serve queries while it is being exported**, so for those seconds the API answers 500 and callbacks fail; products retry with the same reference, pawaPay retries its callbacks, and the reconcile cron settles the rest. The dump holds customer phone numbers: it lives only in the private bucket.
+
+### Restore, or repair by hand?
+
+- **A few rows are wrong** (a bad resolve, a wrong adjustment, one tenant edited by mistake): **repair forward**. Resolve with a note, book the opposite adjustment, edit the tenant back. Never restore for this: a restore throws away every other write made since.
+- **Data is broadly destroyed** (a bad migration, a mass `UPDATE` or `DELETE`): restore with Time Travel to just before the damage.
+
+Who decides: the operator on call proposes it; the studio lead agrees before a production restore. Say so in the alert channel first.
+
+### Restoring production
+
+1. Note the current bookmark, so the restore can be undone: `npx wrangler d1 time-travel info paygate`.
+2. `npx wrangler d1 time-travel restore paygate --timestamp <RFC3339, just before the damage>`. It overwrites the database and cancels queries in flight; it prints the previous bookmark, which undoes it.
+3. **What was lost is every write after that time**: payments created, status changes, webhooks queued, ledger postings, tenant edits. Get it back like this:
+   - **Payments created after the bookmark** are unknown to the gateway but known to pawaPay. A product that retries with the **same reference** gets a new gateway payment (a new `pg…` id) with the **same pawaPay id**, because that id is derived from the tenant and the reference; pawaPay answers "duplicate" and nothing is paid twice. Tell product owners to retry anything created in the window and to match on their reference, not the gateway id.
+   - **Callbacks** for those payments raise "callback for a payment the gateway does not know"; list them in Events (source: callbacks) to see what was in flight.
+   - **Status changes** on older payments: the reconcile cron asks pawaPay again about open payments every minute, and about failed or expired ones of the last day every hour.
+   - **Tenant edits, keys, adjustments**: redo them by hand (operators know what they changed; the alert channel has the rest).
+4. Providers → Books → **Rebuild from payments**, then check every pool's difference is 0 (book adjustments redone in 3).
+
+### Drill
+
+`scripts/restore-drill.sh d1/paygate-<date>.sql.gz` restores a weekly backup into a scratch database, checks its row counts, proves Time Travel undoes a write, and deletes the scratch database. Without an argument it restores a fresh export of production instead (which blocks production queries while it exports: use a quiet hour). Run it after setting up backups and after any schema change, and log it here:
+
+| Date | Source | Duration | Rows (tenants / payments / events / postings) | By |
+|---|---|---|---|---|
+| | | | | |
+
 ## Runbook
 
 | Alert | Do |
