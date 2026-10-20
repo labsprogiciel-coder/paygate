@@ -82,7 +82,7 @@ function formance(state: { exists?: boolean; down?: boolean; accounts?: { addres
 	};
 	return { handler, txs, calls };
 }
-const ON = { FORMANCE_URL: 'https://formance.test', FORMANCE_CLIENT_ID: 'id', FORMANCE_CLIENT_SECRET: 'secret' };
+const ON = { FORMANCE_BASE_URL: 'https://formance.test', FORMANCE_CLIENT_ID: 'id', FORMANCE_CLIENT_SECRET: 'secret' };
 
 test('the sweep copies the journal to Formance once: the posting is the reference, a repeat is not booked twice', async () => {
 	const quiet = silence();

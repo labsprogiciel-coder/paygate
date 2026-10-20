@@ -11,10 +11,10 @@ PI_SPI_ACCOUNT_ALIAS=
 ALERT_WEBHOOK_URL=
 # Sentry error reporting (optional; off while empty)
 SENTRY_DSN=
-# The books copied to a Formance ledger (optional; the journal in D1 is kept either way). FORMANCE_URL is the stack, e.g. https://<org>-<stack>.<region>.formance.cloud
-FORMANCE_URL=
+# The books copied to a Formance ledger (optional; the journal in D1 is kept either way). FORMANCE_BASE_URL is the stack, e.g. https://<org>-<stack>.<region>.formance.cloud
+FORMANCE_BASE_URL=
 FORMANCE_CLIENT_ID=
 FORMANCE_CLIENT_SECRET=
-# optional: the token endpoint (default /api/auth/oauth/token on FORMANCE_URL) and the ledger name (default paygate)
+# optional: the token endpoint (default /api/auth/oauth/token on FORMANCE_BASE_URL) and the ledger name (default paygate)
 FORMANCE_TOKEN_URL=
 FORMANCE_LEDGER=
