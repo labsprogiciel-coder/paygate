@@ -490,22 +490,43 @@ function booksSection(b) {
 }
 function adjustModal(pools) {
 	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
-	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), amount: h('input', { type: 'number', step: 1, required: true, placeholder: 'e.g. 500000 or -1200' }), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const amount = moneyInput({ signed: true, hint: 'Whole FCFA, e.g. 500 000 or -1 200. Positive for money put in, negative for money taken out.' });
+	f.amount = amount.input; f.amount.required = true;
 	const rules = {
-		amount: () => { const n = Number(f.amount.value); return f.amount.value.trim() && Number.isInteger(n) && n !== 0 ? null : 'A whole number of FCFA, not 0: positive for money put in, negative for money taken out.'; },
+		amount: () => { const n = f.amount.money(); return n == null || Number.isNaN(n) || n === 0 ? 'A whole number of FCFA, not 0: digits and spaces, with a minus for money taken out.' : Math.abs(n) > 1e9 ? 'At most 1 000 000 000 FCFA at a time.' : null; },
 		note: () => f.note.value.trim() ? null : 'Say what the money is: it is the only record of why it was booked.',
 	};
 	onBlurCheck(f.amount, rules.amount); onBlurCheck(f.note, rules.note);
+	// what pressing the button will do, in words, so the amount booked is the amount meant
+	const summary = h('p', { class: 'adjust-sum', 'aria-live': 'polite' });
+	const say = () => { const n = f.amount.money(), pool = f.pool.value;
+		put(summary, !n || Number.isNaN(n) ? 'Enter an amount to see what will be booked.' : n > 0 ? ['Adds ', h('strong', {}, fmtAmount(n)), ` to ${pool} unallocated.`] : ['Takes ', h('strong', {}, fmtAmount(-n)), ` out of ${pool} unallocated.`]); };
+	f.amount.addEventListener('input', say); f.pool.addEventListener('change', say); say();
 	const err = h('div');
 	const m = overlay([h('h2', {}, 'Book an adjustment'), h('p', { class: 'muted' }, 'Money in a wallet that belongs to no product: positive for float the studio put in, negative for fees or losses taken out. It cannot be edited later; book the opposite to undo it.'),
-		field('Pool', f.pool, 'The country wallet, or the PI-SPI account, the money sits in.'), field('Amount', f.amount, 'Whole FCFA. Positive for money put in, negative for money taken out.'), field('What is it', f.note, 'Required. Kept with the posting.'), err,
+		field('Pool', f.pool, 'The country wallet, or the PI-SPI account, the money sits in.'), field('Amount', f.amount, amount.hint), field('What is it', f.note, 'Required. Kept with the posting.'), summary, err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: (e) => {
 			if (!check([[f.amount, rules.amount()], [f.note, rules.note()]])) return;
 			return act(e, async () => {
-				await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route();
+				await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: f.amount.money(), note: f.note.value }); m.close(); toast('Booked'); route();
 			}, { busy: 'Booking…', errorIn: err, onError: fieldFor({ invalid_pool: f.pool, invalid_amount: f.amount, invalid_note: f.note }) });
 		} }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
 	f.amount.focus();
+}
+/** "2 000 000" or "-1 200" (any kind of space allowed) as a number: null when empty, NaN when it is not a whole amount. */
+const parseMoney = (v, signed = false) => { const s = String(v).replace(/[\s\u00a0\u202f]/g, ''); if (!s) return null; return (signed ? /^-?\d{1,13}$/ : /^\d{1,13}$/).test(s) ? Number(s) : NaN; };
+/**
+ * An amount of money in whole FCFA. A text input, not type="number": a scroll wheel over it must never change an amount, and "1e5", "-" or
+ * "." are not amounts. Digits and spaces, a leading minus only when `signed`. The hint repeats the value as it will be read, grouped.
+ */
+function moneyInput({ value = null, signed = false, hint }) {
+	const input = h('input', { type: 'text', inputmode: signed ? 'text' : 'numeric', autocomplete: 'off', spellcheck: 'false', value: value == null ? '' : fmtAmount(value).replace(/ FCFA$/, '') });
+	const echo = h('strong');
+	const show = () => { const n = parseMoney(input.value, signed); put(echo, n == null || Number.isNaN(n) ? '' : ` = ${signed && n > 0 ? '+' : ''}${fmtAmount(n)}`); };
+	input.addEventListener('input', show); show();
+	input.money = () => parseMoney(input.value, signed);
+	return { input, hint: h('small', { class: 'hint' }, hint, echo) };
 }
 /** For act(): puts a server error that names a field under that field. `map` is { code: control } or a function of the error. */
 const fieldFor = (map) => (x) => { const el = typeof map === 'function' ? map(x) : map[x.code]; if (!el) return false; check([[el, x.message]]); return true; };
@@ -669,9 +690,11 @@ async function shrinkLogo(file) {
 function tenantForm(t, taken = []) {
 	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, required: true, spellcheck: 'false', autocomplete: 'off' }),
 		name: h('input', { value: t?.name || '', maxlength: 80, required: true, placeholder: t ? null : 'e.g. Courtly', autocomplete: 'off' }),
-		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), max: h('input', { type: 'number', min: 100, step: 1, value: t?.max_amount || '' }),
+		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), 
 		ns: h('input', { value: '', spellcheck: 'false' }),
 		key: h('input', { type: 'checkbox', checked: true }) };
+	const maxIn = moneyInput({ value: t?.max_amount ?? null, hint: 'Whole FCFA. Leave it empty to use the gateway default.' });
+	f.max = maxIn.input;
 	const snap = () => [f.id, f.name, f.webhook, f.max, f.ns].map((x) => x.value).join('\u0000'), start = snap();
 	const err = h('div'), idHint = h('small', { class: 'hint' });
 	const rules = {
@@ -683,7 +706,7 @@ function tenantForm(t, taken = []) {
 			try { const u = new URL(v); if (u.protocol === 'https:' || (u.protocol === 'http:' && /^(localhost|127\.0\.0\.1)$/.test(u.hostname))) return null; } catch { /* not a URL */ }
 			return 'Use a full https:// address, e.g. https://example.com/paygate/webhook.';
 		},
-		max: () => { const v = f.max.value.trim(), n = Number(v); return !v || (Number.isInteger(n) && n >= 100) ? null : 'A whole number of FCFA, at least 100. Leave it empty to use the gateway default.'; },
+		max: () => { const n = f.max.money(); return n == null || n >= 100 ? null : 'A whole number of FCFA, at least 100: digits and spaces only. Leave it empty to use the gateway default.'; },
 	};
 	// the logo: undefined = unchanged, null = removed, a data: URL = new
 	let logo, current = t?.logo || null;
@@ -718,7 +741,7 @@ function tenantForm(t, taken = []) {
 	const save = h('button', { class: 'btn primary', onclick: (e) => {
 		if (!check([[f.name, rules.name()], ...(t ? [] : [[f.id, rules.id()]]), [f.webhook, rules.webhook()], [f.max, rules.max()]])) return;
 		return act(e, async () => {
-			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
+			const max = f.max.money(), wh = f.webhook.value.trim() || null;
 			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); tenantsAt = 0; route(); return; }
 			const id = f.id.value.trim();
 			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null, logo: logo || null });
@@ -728,7 +751,7 @@ function tenantForm(t, taken = []) {
 		}, { busy: t ? 'Saving…' : 'Creating…', errorIn: err, onError: serverField });
 	} }, t ? 'Save' : 'Create tenant');
 	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : field('Id', f.id, idHint), logoField,
-		field('Webhook URL', f.webhook, 'Where payment events are sent. https only; it can be added later.'), field('Max single payment', f.max, 'Whole FCFA. Leave it empty to use the gateway default.'),
+		field('Webhook URL', f.webhook, 'Where payment events are sent. https only; it can be added later.'), field('Max single payment', f.max, maxIn.hint),
 		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
 		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, 'Only for a product moved from another gateway: keeps its provider ids unchanged. Leave it empty for a new product.')), err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true, dirty: () => logo !== undefined || snap() !== start });
