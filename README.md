@@ -39,7 +39,7 @@ npm install
 cp .dev.vars.example .dev.vars        # set ADMIN_API_KEY and WEBHOOK_MASTER_SECRET
 npm run db:migrate:local
 npm run dev                           # PROVIDER_MODE=sandbox: nothing moves, the phone number's last digits pick the outcome
-npm test                              # 82 tests, node:test, no network
+npm test                              # node:test, no network (Node 22, see .nvmrc)
 npm run check                         # tsc
 ```
 
