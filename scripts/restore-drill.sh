@@ -2,7 +2,7 @@
 # Restore drill: proves a backup can be turned back into a working database, and that D1 Time Travel can undo a write,
 # without ever touching production. Run it once now and again after any schema change; write down how long it took.
 #
-#   scripts/restore-drill.sh d1/paygate-2026-10-25T0230Z.sql.gz   # restore that weekly backup from R2 (preferred: tests the backup itself)
+#   scripts/restore-drill.sh d1/paygate-2026-10-25T0230Z-123-1.sql.gz   # restore that weekly backup from R2 (preferred: tests the backup itself)
 #   scripts/restore-drill.sh                                      # restore a fresh export of production. D1 cannot serve queries while it
 #                                                                 # is being exported, so payments pause for that time: run it at a quiet hour
 #

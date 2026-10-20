@@ -111,7 +111,7 @@ The prune runs every hour at :05 in batches of at most 10,000 rows (`src/retenti
 
 1. `npx wrangler r2 bucket create paygate-backups` (private; no public access, no custom domain). In the dashboard, add a lifecycle rule on it that deletes objects after 365 days.
 2. Create an API token with **D1 Edit** and **Workers R2 Storage Edit** on the account. In GitHub → Settings → Secrets and variables → Actions: secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, variable `BACKUPS_ENABLED` = `true` (and `BACKUP_BUCKET` if the bucket has another name).
-3. Actions → Backup → **Run workflow** once, and check the object `d1/paygate-<date>T<time>Z.sql.gz` appears in the bucket.
+3. Actions → Backup → **Run workflow** once, and check the object `d1/paygate-<date>T<time>Z-<run>-<attempt>.sql.gz` appears in the bucket.
 
 It runs every Sunday at 02:30 UTC. **D1 cannot serve queries while it is being exported**, so for those seconds the API answers 500 and callbacks fail; products retry with the same reference, pawaPay retries its callbacks, and the reconcile cron settles the rest. The dump holds customer phone numbers: it lives only in the private bucket.
 
@@ -139,7 +139,7 @@ Who decides: the operator on call proposes it; the studio lead agrees before a p
 
 ### Drill
 
-`scripts/restore-drill.sh d1/paygate-<date>T<time>Z.sql.gz` restores a weekly backup into a scratch database, checks every table holds exactly as many rows as the dump (and fails if not), proves Time Travel undoes a write, and deletes the scratch database, on failure too. Without an argument it restores a fresh export of production instead (which blocks production queries while it exports: use a quiet hour). Run it after setting up backups and after any schema change, and log it here:
+`scripts/restore-drill.sh d1/paygate-<date>T<time>Z-<run>-<attempt>.sql.gz` restores a weekly backup into a scratch database, checks every table holds exactly as many rows as the dump (and fails if not), proves Time Travel undoes a write, and deletes the scratch database, on failure too. Without an argument it restores a fresh export of production instead (which blocks production queries while it exports: use a quiet hour). Run it after setting up backups and after any schema change, and log it here:
 
 | Date | Source | Duration | Rows (tenants / payments / events / postings) | By |
 |---|---|---|---|---|
