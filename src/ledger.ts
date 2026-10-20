@@ -137,7 +137,7 @@ const SWEEP_BATCH = 50;
 /** Postings that keep failing are left for a person after this many tries (an alert says so); the rest wait for the next sweep. */
 export const MAX_ATTEMPTS = 10;
 
-// the source may go negative (record, don't enforce, in this first step); @world is unbounded already
+// the source may go negative (record, don't enforce, in this first step)
 const SEND = `vars {
   monetary $amount
   account $source
@@ -147,7 +147,16 @@ send $amount (
   source = $source allowing unbounded overdraft
   destination = $destination
 )`;
-const FROM_WORLD = SEND.replace(' allowing unbounded overdraft', '');
+// money coming in from outside: Formance refuses @world as a variable source ("can only be used as a variable in the experimental
+// interpreter"), so it is written literally; it is unbounded already
+const FROM_WORLD = `vars {
+  monetary $amount
+  account $destination
+}
+send $amount (
+  source = @world
+  destination = $destination
+)`;
 
 class FormanceError extends Error {
 	status: number; code: string | undefined;
@@ -191,7 +200,9 @@ export async function postPending(env: Env, now = Date.now()): Promise<{ posted:
 		const tx = {
 			reference: x.reference, timestamp: new Date(x.created_at).toISOString(),
 			metadata: Object.fromEntries(Object.entries({ kind: x.kind, pool: x.pool, paymentId: x.payment_id, tenant: x.tenant_id, note: x.note }).filter(([, v]) => v != null)) as Record<string, string>,
-			script: { plain: x.source === 'world' ? FROM_WORLD : SEND, vars: { amount: `${x.asset} ${x.amount}`, source: x.source, destination: x.destination } },
+			script: x.source === 'world'
+				? { plain: FROM_WORLD, vars: { amount: `${x.asset} ${x.amount}`, destination: x.destination } }
+				: { plain: SEND, vars: { amount: `${x.asset} ${x.amount}`, source: x.source, destination: x.destination } },
 		};
 		try {
 			let id: string | null = null;
