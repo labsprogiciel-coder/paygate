@@ -101,7 +101,7 @@ function toast(m, { error = false } = {}) {
  * under a form field) by returning true. A session that ended goes back to sign-in.
  */
 async function act(e, fn, { busy = 'Working…', errorIn, onError } = {}) {
-	const b = e.currentTarget, text = b.textContent;
+	const b = e.currentTarget, text = b.textContent, had = document.activeElement === b, k = keyOf(b), scope = b.closest('[role=dialog]') ?? shell?.main;
 	b.disabled = true; b.setAttribute('aria-busy', 'true'); b.textContent = busy;
 	if (errorIn) put(errorIn);
 	try { return await fn(); }
@@ -111,7 +111,11 @@ async function act(e, fn, { busy = 'Working…', errorIn, onError } = {}) {
 		if (onError?.(x)) return;
 		if (errorIn?.isConnected) put(errorIn, h('div', { class: 'alert bad', role: 'alert' }, x.message));
 		else toast(x.message, { error: true });
-	} finally { b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = text; }
+	} finally {
+		b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = text;
+		// a disabled button drops focus, and a re-render may have replaced it: put focus back on it, or on its replacement
+		if (had && (document.activeElement === document.body || !document.activeElement)) { if (b.isConnected) b.focus(); else focusKey(scope, k); }
+	}
 }
 
 /**
@@ -159,8 +163,14 @@ document.addEventListener('keydown', (e) => {
 	else if (e.shiftKey && (at === first || at === top.box)) { e.preventDefault(); last.focus(); }
 	else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 });
+/**
+ * Controls that a re-render replaces carry a data-key; focus follows the key into the new copy, so saving a form does not drop focus to
+ * <body> when the button that opened it was redrawn in the meantime.
+ */
+const keyOf = (el) => el?.closest?.('[data-key]')?.dataset.key ?? null;
+const focusKey = (scope, k) => { if (!k || !scope) return false; const el = scope.querySelector(`[data-key="${CSS.escape(k)}"]`); el?.focus(); return !!el; };
 function overlay(content, { center = false, label, dirty } = {}) {
-	const back = document.activeElement;
+	const back = document.activeElement, backKey = keyOf(back);
 	const box = h('div', { class: center ? 'modal' : 'drawer', role: 'dialog', 'aria-modal': 'true', tabindex: '-1' }, content);
 	const ov = h('div', { class: `overlay${center ? ' center' : ''}`, onclick: (e) => { if (e.target === ov) self.dismiss() } }, box);
 	const name = () => {
@@ -170,11 +180,14 @@ function overlay(content, { center = false, label, dirty } = {}) {
 	};
 	const self = {
 		box, ov,
-		close() { const i = OPEN.indexOf(self); if (i < 0) return; OPEN.splice(i, 1); ov.remove(); if (back?.isConnected) back.focus(); },
+		close() {
+			const i = OPEN.indexOf(self); if (i < 0) return; OPEN.splice(i, 1); ov.remove();
+			if (back?.isConnected) back.focus(); else focusKey(OPEN.at(-1)?.box ?? shell?.main, backKey);
+		},
 		/** Escape, the backdrop: asks first when a form has unsaved changes */
 		dismiss() { if (dirty?.() && !confirm('Discard your changes?')) return; self.close(); },
 		/** replaces the content (a drawer once loaded) and names the dialog after its new heading */
-		fill(...kids) { put(box, ...kids); name(); },
+		fill(...kids) { const k = box.contains(document.activeElement) ? keyOf(document.activeElement) : null; put(box, ...kids); name(); focusKey(box, k); },
 	};
 	OPEN.push(self);
 	document.body.append(ov);
@@ -323,16 +336,16 @@ function pager({ fetch, render, skeleton, noun = 'rows' }) {
 			h('button', { class: 'btn sm', disabled: loading || stack.length === 1 ? true : null, onclick: () => { stack.pop(); load(true) } }, '← Newer'),
 			h('button', { class: 'btn sm', disabled: loading || !last?.next ? true : null, onclick: () => { stack.push(last.next); load(true) } }, 'Older →'));
 	};
-	const load = async (scroll = false) => {
+	const load = async (scroll = false, quiet = false) => {
 		const mine = ++seq; loading = true; draw();
-		put(body, skeleton(Math.max(3, Math.min(last?.data.length || 8, size))));
+		if (!quiet || !last) put(body, skeleton(Math.max(3, Math.min(last?.data.length || 8, size)))); // a refresh keeps the rows until the new ones arrive
 		if (scroll) body.scrollIntoView({ block: 'start', behavior: 'smooth' });
 		try { const r = await fetch(stack.at(-1), size); if (mine !== seq) return; last = r; put(body, render(r.data)) }
 		catch (e) { if (mine !== seq) return; if (e instanceof AuthError) return signOut('Session ended. Sign in again.'); if (e instanceof NotOperator) return notOperator(e.userId); last = null; put(body, h('div', { class: 'alert bad' }, e.message, ' ', h('button', { class: 'btn sm', onclick: () => load() }, 'Retry'))) }
 		loading = false; draw();
 	};
 	const reset = () => { stack = [null]; last = null; return load() };
-	return { el: h('div', {}, body, nav), reset, refresh: () => load() };
+	return { el: h('div', {}, body, nav), reset, refresh: () => load(false, true) };
 }
 
 // ---- shell + router -------------------------------------------------------------------------------------------------------------
@@ -350,29 +363,67 @@ async function start() {
 	started = true;
 	route();
 }
+/**
+ * The shell (sidebar, nav, main) is built once; navigating swaps only the page inside it. Navigating is the one thing that closes dialogs:
+ * the page they belonged to is gone. An action on a page calls reloadPage() instead, which re-reads that page's data in place.
+ */
+let shell = null;
+/** How the page on screen re-reads its data. A page with its own lists (paging, filters) sets this; otherwise it is drawn again. */
+let pageReload = null;
+function buildShell() {
+	const nav = h('nav', { class: 'nav' }, Object.entries(PAGES).map(([id, [label]]) => h('a', { href: `#/${id}` }, label)));
+	const main = h('main', { class: 'main' });
+	const root = h('div', { class: 'shell' }, h('aside', { class: 'side' }, h('div', { class: 'brand' }, 'Paygate', h('small', {}, 'Operator console')), nav, h('div', { class: 'spacer' }),
+		h('button', { class: 'btn sm', onclick: () => signOut() }, 'Sign out')), main);
+	put(app, root);
+	shell = { root, nav, main };
+}
 async function route() {
 	closeAll();
 	clearNotices(); // the overview puts back what still needs a person
 	const name = (location.hash.slice(2) || 'overview').split('?')[0];
 	const page = PAGES[name] ? name : 'overview';
+	if (!shell?.root.isConnected) buildShell(); // first time, or after sign-in replaced the app
+	for (const a of shell.nav.children) a.setAttribute('aria-current', a.getAttribute('href') === `#/${page}` ? 'page' : 'false');
 	const main = h('main', { class: 'main' }, SKELETON[page]());
-	const nav = h('nav', { class: 'nav' }, Object.entries(PAGES).map(([id, [label]]) => {
-		const n = id === 'payments' ? attention.unknown : id === 'events' ? attention.problems : 0;
-		return h('a', { href: `#/${id}`, 'aria-current': id === page ? 'page' : null }, label, n ? h('span', { class: 'count' }, n) : null);
-	}));
-	put(app, h('div', { class: 'shell' }, h('aside', { class: 'side' }, h('div', { class: 'brand' }, 'Paygate', h('small', {}, 'Operator console')), nav, h('div', { class: 'spacer' }),
-		h('button', { class: 'btn sm', onclick: () => signOut() }, 'Sign out')), main));
+	shell.main.replaceWith(main); shell.main = main;
+	pageReload = null;
 	try {
 		await loadTenants();
 		await PAGES[page][1](main);
-		refreshAttention(nav);
+		if (shell.main === main) pageReload ??= () => PAGES[page][1](main);
+		refreshAttention();
 	} catch (e) {
 		if (e instanceof AuthError) return signOut('Session ended. Sign in again.');
 		if (e instanceof NotOperator) return notOperator(e.userId);
 		put(main, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: route }, 'Retry'));
 	}
 }
-async function refreshAttention(nav) {
+/**
+ * After an action, or Refresh: the page's data again, drawn in place. No skeleton, dialogs stay open, the scroll position is kept, and
+ * focus stays on the control it was on (by key) even if that control was redrawn. A failure is shown, not thrown: the action itself worked.
+ */
+async function reloadPage() {
+	if (!pageReload) return;
+	const y = window.scrollY, main = shell.main, k = main.contains(document.activeElement) ? keyOf(document.activeElement) : null;
+	try {
+		await loadTenants(true);
+		await pageReload();
+		if (shell.main !== main) return; // navigated away meanwhile
+		window.scrollTo(0, y);
+		if (k && !OPEN.length) focusKey(main, k);
+		refreshAttention();
+	} catch (e) {
+		if (e instanceof AuthError) return signOut('Session ended. Sign in again.');
+		if (e instanceof NotOperator) return notOperator(e.userId);
+		toast(`Could not refresh: ${e.message}`, { error: true });
+	}
+}
+/** A page's Refresh button: reloads in place, with the usual busy state. */
+const refreshButton = () => h('button', { class: 'btn', 'data-key': 'refresh', onclick: (e) => act(e, reloadPage, { busy: 'Refreshing…' }) }, 'Refresh');
+async function refreshAttention() {
+	const nav = shell?.nav;
+	if (!nav) return;
 	try {
 		const a = await api('GET', '/admin/attention');
 		attention = { unknown: a.unknown, problems: a.deadWebhooks + a.rejectedCallbacks24h };
@@ -423,7 +474,7 @@ async function overview(main) {
 	const sandbox = prov.data.some((p) => p.id === 'sandbox');
 	const live = prov.data.some((p) => p.notes.includes('LIVE'));
 	put(main,
-		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), h('button', { class: 'btn', onclick: route }, 'Refresh')),
+		head('Overview', null, h('span', { class: `mode ${live ? 's-completed' : sandbox ? 's-low' : 's-idle'}` }, live ? 'Live' : sandbox ? 'Sandbox: no money moves' : 'Not live'), refreshButton()),
 		h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Last 24 hours')), kpis,
 		h('div', { class: 'cols' },
 			h('section', {}, h('div', { class: 'sec' }, h('h2', { class: 'm0' }, 'Latest payments'), h('a', { href: '#/payments' }, 'All payments')), paymentList(recent.data)),
@@ -435,7 +486,7 @@ async function overview(main) {
 /** A short list for the overview; the full table is on the payments page. */
 function paymentList(rows) {
 	if (!rows.length) return h('div', { class: 'card empty' }, 'No payments yet.');
-	return h('div', { class: 'list' }, rows.map((p) => h('div', { class: 'li click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
+	return h('div', { class: 'list' }, rows.map((p) => h('div', { class: 'li click', tabindex: 0, 'data-key': `payment:${p.id}`, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
 		avatar(p),
 		h('div', { class: 'grow min0' }, h('div', { class: 'ellipsis' }, h('span', { class: 'mono' }, p.reference)), h('div', { class: 'muted small ellipsis' }, tenantChip(p.tenant), ' · ', channel(p), ' · ', ago(p.createdAt))),
 		h('span', { class: 'num strong' }, fmtAmount(p.amount)), badge(p.status))));
@@ -456,7 +507,7 @@ const ENV = { Live: 's-completed', Sandbox: 's-low', Simulated: 's-low', Simulat
 
 async function providersPage(main) {
 	const [prov, books] = await Promise.all([api('GET', '/admin/providers'), api('GET', '/admin/ledger').catch((e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; })]);
-	put(main, head('Providers', 'Every payment provider the gateway uses: what each channel can do on the account right now, and the accounts money is paid from. Figures are for the last 24 hours.', h('button', { class: 'btn', onclick: route }, 'Refresh')),
+	put(main, head('Providers', 'Every payment provider the gateway uses: what each channel can do on the account right now, and the accounts money is paid from. Figures are for the last 24 hours.', refreshButton()),
 		prov.data.map((p) => pspSection(p, prov.last24h.filter((r) => r.provider === p.id || (p.id === 'pispi' && r.rail?.startsWith('pispi'))), prov.floor)),
 		books ? booksSection(books) : null);
 }
@@ -481,10 +532,10 @@ function booksSection(b) {
 		b.enabled ? h('td', { class: `num${p.formance != null && p.formance !== p.total ? ' bad-text' : ''}` }, p.formance == null ? '–' : fmtAmount(p.formance)) : null));
 	return h('section', { class: 'books mt22' },
 		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
-			h('button', { class: 'btn', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
-			h('button', { class: 'btn', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments')),
+			h('button', { class: 'btn', 'data-key': 'adjust', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
+			h('button', { class: 'btn', 'data-key': 'rebuild', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); await reloadPage(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments')),
 		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status,
-			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings')] : null),
+			o.stuck ? [' ', h('button', { class: 'btn sm', 'data-key': 'retry-stuck', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); await reloadPage(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings')] : null),
 		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
 			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }
@@ -509,7 +560,7 @@ function adjustModal(pools) {
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: (e) => {
 			if (!check([[f.amount, rules.amount()], [f.note, rules.note()]])) return;
 			return act(e, async () => {
-				await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: f.amount.money(), note: f.note.value }); m.close(); toast('Booked'); route();
+				await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: f.amount.money(), note: f.note.value }); m.close(); toast('Booked'); reloadPage();
 			}, { busy: 'Booking…', errorIn: err, onError: fieldFor({ invalid_pool: f.pool, invalid_amount: f.amount, invalid_note: f.note }) });
 		} }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
 	f.amount.focus();
@@ -584,7 +635,7 @@ function pspSection(p, rows, floor) {
 // ---- payments -------------------------------------------------------------------------------------------------------------------
 function paymentsTable(rows) {
 	return table([{ label: 'When' }, { label: 'Tenant' }, { label: 'Type' }, { label: 'PSP' }, { label: 'Channel' }, { label: 'Origin' }, { label: 'Reference' }, { label: 'Counterparty' }, { label: 'Amount', num: true }, { label: 'Status' }],
-		rows.map((p) => h('tr', { class: 'click', tabindex: 0, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
+		rows.map((p) => h('tr', { class: 'click', tabindex: 0, 'data-key': `payment:${p.id}`, onclick: () => paymentDrawer(p.id), onkeydown: (e) => { if (e.key === 'Enter') paymentDrawer(p.id) } },
 			h('td', { title: fmtTime(p.createdAt) }, ago(p.createdAt)), h('td', {}, tenantChip(p.tenant)), h('td', {}, p.object === 'collection' ? '↓ in' : '↑ out'), h('td', {}, pspBadge(p)), h('td', {}, h('span', { class: 'chan' }, icon(p), channel(p))), h('td', {}, origin(p)),
 			h('td', { class: 'mono' }, p.reference), h('td', { class: 'mono' }, p.counterparty || '–'), h('td', { class: 'num' }, fmtAmount(p.amount)), h('td', {}, badge(p.status)))),
 		'No payments match.');
@@ -618,7 +669,8 @@ async function payments(main) {
 		} catch (e) { if (e instanceof AuthError || e instanceof NotOperator) throw e; put(kpis); }
 	};
 	const load = () => Promise.all([list.reset(), loadKpis()]);
-	put(main, head('Payments', null, h('button', { class: 'btn', onclick: () => { list.refresh(); loadKpis(); } }, 'Refresh')), kpis, h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), list.el);
+	pageReload = () => Promise.all([list.refresh(), loadKpis()]);
+	put(main, head('Payments', null, refreshButton()), kpis, h('div', { class: 'bar' }, status, kind, tenant, h('span', { class: 'grow' }), find), list.el);
 	await load();
 }
 async function paymentDrawer(id) {
@@ -659,7 +711,7 @@ async function tenants(main) {
 	const data = [...TENANTS.values()];
 	put(main, head('Tenants', 'The products that use this gateway.', h('button', { class: 'btn primary', onclick: () => tenantForm(null, data.map((t) => t.id)) }, 'New tenant')),
 		table([{ label: 'Name' }, { label: 'Id' }, { label: 'Status' }, { label: 'Webhook' }, { label: 'Max payment', num: true }, { label: 'Created' }],
-			data.map((t) => h('tr', { class: 'click', tabindex: 0, onclick: () => tenantDrawer(t.id), onkeydown: (e) => { if (e.key === 'Enter') tenantDrawer(t.id) } },
+			data.map((t) => h('tr', { class: 'click', tabindex: 0, 'data-key': `tenant:${t.id}`, onclick: () => tenantDrawer(t.id), onkeydown: (e) => { if (e.key === 'Enter') tenantDrawer(t.id) } },
 				h('td', {}, h('span', { class: 'chan' }, tenantMark(t, 28), h('strong', {}, t.name))), h('td', { class: 'mono' }, t.id), h('td', {}, badge(t.status)), h('td', { class: 'mono' }, t.webhook_url || '–'), h('td', { class: 'num' }, t.max_amount ? fmtAmount(t.max_amount) : 'default'), h('td', {}, fmtTime(t.created_at)))),
 			'No tenants yet. Create one for each product that will use Paygate.'));
 }
@@ -687,7 +739,7 @@ async function shrinkLogo(file) {
 	return out;
 }
 
-function tenantForm(t, taken = []) {
+function tenantForm(t, taken = [], { onSaved } = {}) {
 	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, required: true, spellcheck: 'false', autocomplete: 'off' }),
 		name: h('input', { value: t?.name || '', maxlength: 80, required: true, placeholder: t ? null : 'e.g. Courtly', autocomplete: 'off' }),
 		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), 
@@ -742,11 +794,10 @@ function tenantForm(t, taken = []) {
 		if (!check([[f.name, rules.name()], ...(t ? [] : [[f.id, rules.id()]]), [f.webhook, rules.webhook()], [f.max, rules.max()]])) return;
 		return act(e, async () => {
 			const max = f.max.money(), wh = f.webhook.value.trim() || null;
-			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); tenantsAt = 0; route(); return; }
+			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); await onSaved?.(); reloadPage(); return; }
 			const id = f.id.value.trim();
 			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null, logo: logo || null });
-			tenantsAt = 0;
-			m.close(); route();
+			m.close(); reloadPage();
 			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
 		}, { busy: t ? 'Saving…' : 'Creating…', errorIn: err, onError: serverField });
 	} }, t ? 'Save' : 'Create tenant');
@@ -781,20 +832,20 @@ async function tenantDrawer(id) {
 				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)),
 				books ? [h('dt', {}, 'Holds'), h('dd', {}, owns.length ? owns.map((x) => h('div', {}, h('strong', { class: x.available < 0 ? 'bad-text' : null }, fmtAmount(x.available)), ` in ${x.pool}`, x.held ? h('span', { class: 'muted' }, ` · ${fmtAmount(x.held)} held`) : null)) : h('span', { class: 'muted' }, 'nothing yet'))] : null)),
 			h('div', { class: 'actions left mb20' },
-				h('button', { class: 'btn', onclick: () => tenantForm(t) }, 'Edit'),
-				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: (e) => {
-					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); route(); };
+				h('button', { class: 'btn', 'data-key': 'edit', onclick: () => tenantForm(t, [], { onSaved: render }) }, 'Edit'),
+				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, 'data-key': 'status', onclick: (e) => {
+					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); reloadPage(); };
 					return t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : act(e, go, { busy: 'Reactivating…' });
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
-			h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', onclick: () => newKey(id, render) }, 'New key')),
+			h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', 'data-key': 'new-key', onclick: () => newKey(id, render) }, 'New key')),
 			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: h('span', { class: 'sr-only' }, 'Actions') }],
 				keys.data.map((k) => h('tr', {}, h('td', { class: 'mono' }, `pgk_${k.id}_…`), h('td', {}, k.label || '–'), h('td', {}, k.revoked_at ? badge('dead') : ago(k.last_used_at)),
 					h('td', {}, k.revoked_at ? h('span', { class: 'muted' }, 'revoked') : h('button', { class: 'btn sm danger', onclick: () => confirmModal('Revoke key?', `pgk_${k.id}_… stops working immediately. Anything still using it will get 401.`, 'Revoke', async () => { await api('DELETE', `/admin/tenants/${id}/keys/${k.id}`); await render(); }) }, 'Revoke')))),
 				'No keys yet.'),
 			h('h2', { class: 'mt22' }, 'Webhook signing secret'),
 			h('div', { class: 'actions left mt0' },
-				h('button', { class: 'btn', onclick: (e) => act(e, async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); }, { busy: 'Revealing…' }) }, 'Reveal'),
-				h('button', { class: 'btn danger', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
+				h('button', { class: 'btn', 'data-key': 'reveal', onclick: (e) => act(e, async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); }, { busy: 'Revealing…' }) }, 'Reveal'),
+				h('button', { class: 'btn danger', 'data-key': 'rotate', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
 	};
 	try { await render() } catch (e) { d.fill(h('h2', {}, 'Tenant'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
@@ -869,7 +920,8 @@ async function events(main) {
 	const apply = () => { const p = params(); history.replaceState(null, '', `#/events${p.size ? '?' + p : ''}`); load(); };
 	problems.addEventListener('change', apply); tenant.addEventListener('change', apply); payment.addEventListener('change', apply);
 
-	put(main, head('Events', 'Everything that happened, newest first: payment status changes, provider callbacks in, and webhooks out to products.', h('button', { class: 'btn', onclick: () => list.refresh() }, 'Refresh')),
+	pageReload = () => list.refresh();
+	put(main, head('Events', 'Everything that happened, newest first: payment status changes, provider callbacks in, and webhooks out to products.', refreshButton()),
 		h('div', { class: 'bar' }, seg, h('label', { class: 'check' }, problems, 'Needs attention'), h('span', { class: 'grow' }), tenant, payment), list.el);
 	await load();
 }
