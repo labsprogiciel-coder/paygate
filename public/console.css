@@ -51,7 +51,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar .grow { flex: 1; }
 input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
 input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-label { display: block; font-weight: 550; margin: 12px 0 4px; } label small { font-weight: 400; color: var(--muted); }
+label, .lbl { display: block; font-weight: 550; margin: 12px 0 4px; } label small { font-weight: 400; color: var(--muted); }
+.adjust-sum { margin: 14px 0 0; padding: 9px 12px; border-radius: 8px; background: var(--idle-bg); }
+.field-err { display: block; color: var(--bad); font-size: 12.5px; margin-top: 4px; font-weight: 550; }
+[aria-invalid="true"] { border-color: var(--bad) !important; box-shadow: 0 0 0 1px var(--bad); }
 .field input, .field textarea, .field select { width: 100%; }
 .btn { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; cursor: pointer; font-weight: 550; }
 .btn:hover { border-color: var(--muted); }
@@ -74,7 +77,11 @@ label { display: block; font-weight: 550; margin: 12px 0 4px; } label small { fo
 .timeline .t { color: var(--muted); font-size: 12px; }
 pre { background: var(--idle-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; font: 12px/1.5 var(--mono); margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; }
 .login { max-width: 380px; margin: 14vh auto; padding: 0 16px; }
-.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 10px; z-index: 40; }
+.toasts { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; z-index: 40; width: max-content; max-width: min(560px, calc(100vw - 32px)); pointer-events: none; }
+.toast { display: flex; align-items: center; gap: 10px; background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 10px; pointer-events: auto; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+.toast.bad { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); font-weight: 550; }
+.toast-x { background: none; border: 0; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; opacity: .85; } .toast-x:hover { opacity: 1; }
+button[aria-busy="true"] { cursor: progress; }
 .t16 { font-size: 16px; } .left { justify-content: flex-start; } .m0 { margin: 0; } .mt0 { margin-top: 0; } .mt2 { margin-top: 2px; } .mt6 { margin-top: 6px; } .mt22 { margin-top: 22px; }
 .mb6 { margin-bottom: 6px; } .mb16 { margin-bottom: 16px; } .mb20 { margin-bottom: 20px; } .ml8 { margin-left: 8px; } .bad-text { color: var(--bad); }
 .sub.m0 { margin: 0; }

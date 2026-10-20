@@ -32,7 +32,7 @@ async function api(method, path, body) {
 	const data = await res.json().catch(() => ({}));
 	if (res.status === 401) throw new AuthError(data?.error?.message || 'Unauthorized');
 	if (res.status === 403 && data?.error?.code === 'not_operator') throw new NotOperator(data.error.userId);
-	if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+	if (!res.ok) throw Object.assign(new Error(data?.error?.message || `HTTP ${res.status}`), { code: data?.error?.code ?? null });
 	return data;
 }
 
@@ -77,9 +77,42 @@ const tenantMark = (t, size = 20) => {
 	return t?.logo ? h('img', { class: `tmark tm-${size}`, src: t.logo, alt: '', width: size, height: size }) : h('span', { class: `tmark tm-${size} tm-txt`, 'aria-hidden': 'true' }, initials(name));
 };
 /** A tenant as a mark and a name, from its id. */
+/** A filter by tenant: every known tenant by name, plus whatever the URL asked for even if it is not (or no longer) one of them. */
+const tenantSelect = (current, label = 'Tenant') => h('select', { 'aria-label': label }, h('option', { value: '' }, 'Any tenant'),
+	[...TENANTS.values()].sort((a, b) => a.name.localeCompare(b.name)).map((t) => h('option', { value: t.id, selected: t.id === current ? true : null }, t.name)),
+	current && !TENANTS.has(current) ? h('option', { value: current, selected: true }, current) : null);
 const tenantChip = (id) => { if (!id) return null; const t = TENANTS.get(id); return h('span', { class: 'chan tchip', title: id }, tenantMark(t ?? { id }), t?.name || id); };
 
-const toast = (m) => { const t = h('div', { class: 'toast', role: 'status' }, m); document.body.append(t); setTimeout(() => t.remove(), 2600); };
+/**
+ * Toasts stack in one live region, newest at the bottom, so two never sit on top of each other. A success ("Saved") fades after a few
+ * seconds; an error stays until it is dismissed, and is announced at once (role=alert).
+ */
+function toast(m, { error = false } = {}) {
+	let stack = document.querySelector('.toasts');
+	if (!stack) { stack = h('div', { class: 'toasts', 'aria-live': 'polite' }); document.body.append(stack); }
+	const t = h('div', { class: `toast${error ? ' bad' : ''}`, role: error ? 'alert' : null }, h('span', { class: 'grow' }, m),
+		error ? h('button', { class: 'toast-x', 'aria-label': 'Dismiss', onclick: () => t.remove() }, '×') : null);
+	stack.append(t);
+	if (!error) setTimeout(() => t.remove(), 4000);
+}
+/**
+ * Every button that calls the API goes through this: the button is disabled and marked busy, says what it is doing, and comes back when the
+ * call is done. An error is shown next to the action (`errorIn`), or else as a toast that stays; `onError` may claim it first (to put it
+ * under a form field) by returning true. A session that ended goes back to sign-in.
+ */
+async function act(e, fn, { busy = 'Working…', errorIn, onError } = {}) {
+	const b = e.currentTarget, text = b.textContent;
+	b.disabled = true; b.setAttribute('aria-busy', 'true'); b.textContent = busy;
+	if (errorIn) put(errorIn);
+	try { return await fn(); }
+	catch (x) {
+		if (x instanceof AuthError) return signOut('Session ended. Sign in again.');
+		if (x instanceof NotOperator) return notOperator(x.userId);
+		if (onError?.(x)) return;
+		if (errorIn?.isConnected) put(errorIn, h('div', { class: 'alert bad', role: 'alert' }, x.message));
+		else toast(x.message, { error: true });
+	} finally { b.disabled = false; b.removeAttribute('aria-busy'); b.textContent = text; }
+}
 
 /**
  * What needs a person, as toasts that stay until dismissed or acted on. A dismissed one stays away for this tab until what it says changes
@@ -102,28 +135,100 @@ function notices(items) {
 	}));
 }
 const clearNotices = () => document.querySelector('.notices')?.replaceChildren();
-const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead') } };
+const copy = async (text) => { try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed: select the text instead', { error: true }) } };
 
 // ---- overlays -------------------------------------------------------------------------------------------------------------------
-function overlay(content, { center = false } = {}) {
-	const box = h('div', { class: center ? 'modal' : 'drawer', role: 'dialog', 'aria-modal': 'true' }, content);
-	const ov = h('div', { class: `overlay${center ? ' center' : ''}`, onclick: (e) => { if (e.target === ov) close() } }, box);
-	const onKey = (e) => { if (e.key === 'Escape') close() };
-	const close = () => { ov.remove(); document.removeEventListener('keydown', onKey) };
-	document.addEventListener('keydown', onKey);
+let uidN = 0;
+const uid = (prefix) => `${prefix}${++uidN}`;
+/**
+ * Dialogs and drawers stack: Escape and a click on the backdrop close only the top one, Tab stays inside it, and closing gives focus back to
+ * whatever opened it. Each is named by its first heading (aria-labelledby), or by `label` while it has none (a drawer still loading).
+ * A form passes `dirty`, and is not thrown away by Escape or the backdrop without asking.
+ */
+const OPEN = [];
+const FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
+document.addEventListener('keydown', (e) => {
+	const top = OPEN.at(-1);
+	if (!top) return;
+	if (e.key === 'Escape') { e.preventDefault(); top.dismiss(); return; }
+	if (e.key !== 'Tab') return;
+	const els = [...top.box.querySelectorAll(FOCUSABLE)].filter((x) => x.getClientRects().length);
+	if (!els.length) { e.preventDefault(); top.box.focus(); return; }
+	const first = els[0], last = els.at(-1), at = document.activeElement;
+	if (!top.box.contains(at)) { e.preventDefault(); first.focus(); }
+	else if (e.shiftKey && (at === first || at === top.box)) { e.preventDefault(); last.focus(); }
+	else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+});
+function overlay(content, { center = false, label, dirty } = {}) {
+	const back = document.activeElement;
+	const box = h('div', { class: center ? 'modal' : 'drawer', role: 'dialog', 'aria-modal': 'true', tabindex: '-1' }, content);
+	const ov = h('div', { class: `overlay${center ? ' center' : ''}`, onclick: (e) => { if (e.target === ov) self.dismiss() } }, box);
+	const name = () => {
+		const hd = box.querySelector('h1, h2');
+		if (hd) { hd.id ||= uid('dlg'); box.setAttribute('aria-labelledby', hd.id); box.removeAttribute('aria-label'); }
+		else if (label) box.setAttribute('aria-label', label);
+	};
+	const self = {
+		box, ov,
+		close() { const i = OPEN.indexOf(self); if (i < 0) return; OPEN.splice(i, 1); ov.remove(); if (back?.isConnected) back.focus(); },
+		/** Escape, the backdrop: asks first when a form has unsaved changes */
+		dismiss() { if (dirty?.() && !confirm('Discard your changes?')) return; self.close(); },
+		/** replaces the content (a drawer once loaded) and names the dialog after its new heading */
+		fill(...kids) { put(box, ...kids); name(); },
+	};
+	OPEN.push(self);
 	document.body.append(ov);
-	box.querySelector('input, textarea, select, button')?.focus();
-	return { close, box };
+	name();
+	(box.querySelector('input:not([type="hidden"]):not(:disabled):not(.sr-only), textarea, select, button') || box).focus();
+	return self;
 }
+/** Leaving a page closes every dialog without moving focus back into a page that is going away. */
+const closeAll = () => { for (const o of OPEN.splice(0)) o.ov.remove(); };
 function secretModal(title, note, value) {
 	const m = overlay([h('h2', {}, title), h('p', { class: 'muted' }, note), h('code', { class: 'secret' }, value),
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => copy(value) }, 'Copy'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 function confirmModal(title, text, label, onYes) {
-	const m = overlay([h('h2', {}, title), h('p', {}, text), h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-		h('button', { class: 'btn danger solid', onclick: async (e) => { e.target.disabled = true; try { await onYes(); m.close() } catch (err) { e.target.disabled = false; toast(err.message) } } }, label))], { center: true });
+	const err = h('div');
+	const m = overlay([h('h2', {}, title), h('p', {}, text), err, h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
+		h('button', { class: 'btn danger solid', onclick: (e) => act(e, async () => { await onYes(); m.close(); }, { busy: `${label}…`, errorIn: err }) }, label))], { center: true });
 }
-const field = (label, input, hint) => h('div', { class: 'field' }, h('label', {}, label, hint ? h('small', {}, ` ${hint}`) : null), input);
+/**
+ * A form field: the label is tied to its control (for/id), and the hint and any error under it are read with it (aria-describedby).
+ * Meaning goes in the hint, never only in a placeholder, which disappears as soon as someone types. `hint` may be a node that changes.
+ */
+const ERR = new WeakMap();
+function field(label, input, hint) {
+	input.id ||= uid('f');
+	const hintEl = hint == null ? null : hint.nodeType ? hint : h('small', { class: 'hint' }, hint);
+	if (hintEl) hintEl.id ||= uid('h');
+	const errEl = h('small', { class: 'field-err', id: uid('e'), hidden: true });
+	ERR.set(input, errEl);
+	input.setAttribute('aria-describedby', [hintEl?.id, errEl.id].filter(Boolean).join(' '));
+	return h('div', { class: 'field' }, h('label', { for: input.id }, label), input, hintEl, errEl);
+}
+/** Shows `msg` under the field (or clears it with null) and marks the control invalid for assistive tech. */
+function setError(input, msg) {
+	const el = ERR.get(input);
+	if (!el) return;
+	if (msg) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
+	put(el, msg || ''); el.hidden = !msg;
+}
+/** Checks [control, message-or-null] pairs: marks every wrong one, moves focus to the first, and says whether all were right. */
+function check(rules) {
+	let first = null;
+	for (const [input, msg] of rules) { setError(input, msg || null); if (msg && !first) first = input; }
+	if (first) { first.closest('details')?.setAttribute('open', ''); first.focus(); }
+	return !first;
+}
+/**
+ * Checks one field again when the person leaves it, so a mistake shows before Save, not only after. Not when they are leaving it for one of
+ * the dialog's buttons: an error appearing then pushes the button down under the pointer and the click is lost; the button checks anyway.
+ */
+const onBlurCheck = (input, rule) => input.addEventListener('blur', (e) => {
+	if (e.relatedTarget?.closest?.('.actions')) return;
+	if (input.value !== '' || input.hasAttribute('aria-invalid')) setError(input, rule() || null);
+});
 
 // ---- login ----------------------------------------------------------------------------------------------------------------------
 const loadScript = (src) => new Promise((ok, fail) => document.head.append(h('script', { src, crossorigin: 'anonymous', 'data-clerk-publishable-key': CLERK.pk, onload: ok, onerror: () => fail(new Error(`Could not load ${src}`)) })));
@@ -144,12 +249,12 @@ async function signOut(msg) {
 const login = (msg) => CLERK.pk ? clerkLogin(msg) : keyLogin(msg);
 
 function keyLogin(msg) {
-	const input = h('input', { type: 'password', autocomplete: 'off', placeholder: 'ADMIN_API_KEY', 'aria-label': 'Operator key' });
+	const input = h('input', { type: 'password', autocomplete: 'off', required: true });
 	const form = h('form', { class: 'login', onsubmit: async (e) => {
 		e.preventDefault(); key = input.value.trim();
 		try { await api('GET', '/admin/float'); store.set(key); start() } catch (err) { key = null; keyLogin(err instanceof AuthError ? 'That key was not accepted.' : err.message) }
 	} }, h('h1', {}, 'Paygate'), h('p', { class: 'sub' }, 'Operator console. The key stays in this tab only.'), msg ? h('div', { class: 'alert bad' }, msg) : null,
-		field('Operator key', input), h('div', { class: 'actions' },
+		field('Operator key', input, 'The ADMIN_API_KEY secret of this Worker.'), h('div', { class: 'actions' },
 			CLERK.pk ? h('button', { class: 'btn', type: 'button', onclick: () => clerkLogin() }, 'Back') : null,
 			h('button', { class: 'btn primary', type: 'submit' }, 'Sign in')));
 	put(app, form); input.focus();
@@ -246,7 +351,7 @@ async function start() {
 	route();
 }
 async function route() {
-	document.querySelectorAll('.overlay').forEach((o) => o.remove());
+	closeAll();
 	clearNotices(); // the overview puts back what still needs a person
 	const name = (location.hash.slice(2) || 'overview').split('?')[0];
 	const page = PAGES[name] ? name : 'overview';
@@ -377,25 +482,54 @@ function booksSection(b) {
 	return h('section', { class: 'books mt22' },
 		h('div', { class: 'bar' }, h('div', { class: 'grow' }, h('h2', { class: 'm0' }, 'Books'), h('p', { class: 'sub m0' }, 'Who owns the money in each wallet. A difference is money the books cannot explain yet: provider fees, float the studio put in, or payments from before the books.')),
 			h('button', { class: 'btn', onclick: () => adjustModal(b.pools.map((p) => p.pool)) }, 'Book an adjustment…'),
-			h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; try { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); } catch (x) { e.target.disabled = false; toast(x.message) } } }, 'Rebuild from payments')),
+			h('button', { class: 'btn', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); route(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments')),
 		h('p', { class: `small ${o.stuck || b.formanceError ? 'bad-text' : 'muted'}` }, status,
-			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: async (e) => { e.currentTarget.disabled = true; try { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); } catch (x) { e.currentTarget.disabled = false; toast(x.message) } } }, 'Retry stuck postings')] : null),
+			o.stuck ? [' ', h('button', { class: 'btn sm', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/retry'); toast(`${plural(r.reset, 'posting')} will be sent again`); route(); }, { busy: 'Retrying…' }) }, 'Retry stuck postings')] : null),
 		table([{ label: 'Pool' }, { label: 'Products: available' }, { label: 'Unallocated', num: true }, { label: 'Books', num: true }, { label: 'Wallet', num: true }, { label: 'Difference', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
 			rows, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }
 function adjustModal(pools) {
 	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
-	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), amount: h('input', { type: 'number', step: 1, placeholder: 'e.g. 500000 or -1200' }), note: h('input', { maxlength: 200, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const amount = moneyInput({ signed: true, hint: 'Whole FCFA, e.g. 500 000 or -1 200. Positive for money put in, negative for money taken out.' });
+	f.amount = amount.input; f.amount.required = true;
+	const rules = {
+		amount: () => { const n = f.amount.money(); return n == null || Number.isNaN(n) || n === 0 ? 'A whole number of FCFA, not 0: digits and spaces, with a minus for money taken out.' : Math.abs(n) > 1e9 ? 'At most 1 000 000 000 FCFA at a time.' : null; },
+		note: () => f.note.value.trim() ? null : 'Say what the money is: it is the only record of why it was booked.',
+	};
+	onBlurCheck(f.amount, rules.amount); onBlurCheck(f.note, rules.note);
+	// what pressing the button will do, in words, so the amount booked is the amount meant
+	const summary = h('p', { class: 'adjust-sum', 'aria-live': 'polite' });
+	const say = () => { const n = f.amount.money(), pool = f.pool.value;
+		put(summary, !n || Number.isNaN(n) ? 'Enter an amount to see what will be booked.' : n > 0 ? ['Adds ', h('strong', {}, fmtAmount(n)), ` to ${pool} unallocated.`] : ['Takes ', h('strong', {}, fmtAmount(-n)), ` out of ${pool} unallocated.`]); };
+	f.amount.addEventListener('input', say); f.pool.addEventListener('change', say); say();
 	const err = h('div');
 	const m = overlay([h('h2', {}, 'Book an adjustment'), h('p', { class: 'muted' }, 'Money in a wallet that belongs to no product: positive for float the studio put in, negative for fees or losses taken out. It cannot be edited later; book the opposite to undo it.'),
-		field('Pool', f.pool), field('Amount', f.amount, '(FCFA)'), field('What is it', f.note), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try { await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: Number(f.amount.value), note: f.note.value }); m.close(); toast('Booked'); route(); }
-			catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-		} }, 'Book it'))], { center: true });
+		field('Pool', f.pool, 'The country wallet, or the PI-SPI account, the money sits in.'), field('Amount', f.amount, amount.hint), field('What is it', f.note, 'Required. Kept with the posting.'), summary, err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: (e) => {
+			if (!check([[f.amount, rules.amount()], [f.note, rules.note()]])) return;
+			return act(e, async () => {
+				await api('POST', '/admin/ledger/adjustments', { pool: f.pool.value, amount: f.amount.money(), note: f.note.value }); m.close(); toast('Booked'); route();
+			}, { busy: 'Booking…', errorIn: err, onError: fieldFor({ invalid_pool: f.pool, invalid_amount: f.amount, invalid_note: f.note }) });
+		} }, 'Book it'))], { center: true, dirty: () => !!(f.amount.value.trim() || f.note.value.trim()) });
 	f.amount.focus();
 }
+/** "2 000 000" or "-1 200" (any kind of space allowed) as a number: null when empty, NaN when it is not a whole amount. */
+const parseMoney = (v, signed = false) => { const s = String(v).replace(/[\s\u00a0\u202f]/g, ''); if (!s) return null; return (signed ? /^-?\d{1,13}$/ : /^\d{1,13}$/).test(s) ? Number(s) : NaN; };
+/**
+ * An amount of money in whole FCFA. A text input, not type="number": a scroll wheel over it must never change an amount, and "1e5", "-" or
+ * "." are not amounts. Digits and spaces, a leading minus only when `signed`. The hint repeats the value as it will be read, grouped.
+ */
+function moneyInput({ value = null, signed = false, hint }) {
+	const input = h('input', { type: 'text', inputmode: signed ? 'text' : 'numeric', autocomplete: 'off', spellcheck: 'false', value: value == null ? '' : fmtAmount(value).replace(/ FCFA$/, '') });
+	const echo = h('strong');
+	const show = () => { const n = parseMoney(input.value, signed); put(echo, n == null || Number.isNaN(n) ? '' : ` = ${signed && n > 0 ? '+' : ''}${fmtAmount(n)}`); };
+	input.addEventListener('input', show); show();
+	input.money = () => parseMoney(input.value, signed);
+	return { input, hint: h('small', { class: 'hint' }, hint, echo) };
+}
+/** For act(): puts a server error that names a field under that field. `map` is { code: control } or a function of the error. */
+const fieldFor = (map) => (x) => { const el = typeof map === 'function' ? map(x) : map[x.code]; if (!el) return false; check([[el, x.message]]); return true; };
 
 function pspSection(p, rows, floor) {
 	const sum = (f) => rows.filter(f).reduce((a, r) => ({ n: a.n + r.n, amount: a.amount + (r.amount || 0) }), { n: 0, amount: 0 });
@@ -457,14 +591,13 @@ function paymentsTable(rows) {
 }
 async function payments(main) {
 	const q = new URLSearchParams(location.hash.split('?')[1] || '');
-	const sel = (name, opts) => { const s = h('select', { 'aria-label': name }, opts.map(([v, l]) => h('option', { value: v, selected: q.get(name) === v ? true : null }, l))); return s; };
+	const sel = (name, opts) => { const s = h('select', { 'aria-label': name === 'kind' ? 'Direction' : 'Status' }, opts.map(([v, l]) => h('option', { value: v, selected: q.get(name) === v ? true : null }, l))); return s; };
 	const status = sel('status', [['', 'Any status'], ['processing', 'Processing'], ['unknown', 'Unknown'], ['completed', 'Completed'], ['failed', 'Failed'], ['expired', 'Expired']]);
 	const kind = sel('kind', [['', 'In and out'], ['collection', 'Collections (in)'], ['disbursement', 'Disbursements (out)']]);
-	const tenant = h('input', { placeholder: 'Tenant id', value: q.get('tenant') || '', 'aria-label': 'tenant', size: 14 });
+	const tenant = tenantSelect(q.get('tenant') || '');
 	const find = h('input', { placeholder: 'Find a payment id…', 'aria-label': 'Open payment by id', size: 24 });
 	const apply = () => { const p = filters(); history.replaceState(null, '', `#/payments${p.size ? '?' + p : ''}`); load(); };
-	for (const el of [status, kind]) el.addEventListener('change', apply);
-	tenant.addEventListener('change', apply);
+	for (const el of [status, kind, tenant]) el.addEventListener('change', apply);
 	find.addEventListener('keydown', (e) => { if (e.key === 'Enter' && find.value.trim()) paymentDrawer(find.value.trim()) });
 	const filters = () => { const p = new URLSearchParams(); if (status.value) p.set('status', status.value); if (kind.value) p.set('kind', kind.value); if (tenant.value.trim()) p.set('tenant', tenant.value.trim()); return p };
 	const list = pager({ noun: 'payments',
@@ -489,11 +622,11 @@ async function payments(main) {
 	await load();
 }
 async function paymentDrawer(id) {
-	const d = overlay(skDrawer());
+	const d = overlay(skDrawer(), { label: 'Payment' });
 	const render = (p) => {
 		const resolvable = p.status === 'processing' || p.status === 'unknown' ? ['completed', 'failed'] : p.status === 'failed' || p.status === 'expired' ? ['completed'] : [];
 		const row = (k, v) => v == null || v === '' ? null : [h('dt', {}, k), h('dd', {}, v)];
-		put(d.box, 
+		d.fill(
 			h('div', { class: 'bar' }, h('h1', { class: 'grow mono t16' }, p.id), badge(p.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			p.status === 'unknown' ? h('div', { class: 'alert bad' }, 'The outcome of this payout is unknown. Check the provider dashboard for the money before deciding.') : null,
 			h('div', { class: 'card' }, h('dl', { class: 'kv' },
@@ -505,20 +638,19 @@ async function paymentDrawer(id) {
 			h('h2', {}, 'History'),
 			h('ul', { class: 'timeline' }, p.events.map((e) => h('li', {}, h('strong', {}, e.type), e.type === 'late_completion' ? h('span', { class: 'badge late ml8' }, 'late') : null, ' ', h('span', { class: 'muted' }, `by ${e.actor}`), e.detail ? h('div', {}, e.detail) : null, h('div', { class: 't' }, fmtTime(e.created_at))))));
 	};
-	try { render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`)) } catch (e) { put(d.box, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+	try { render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`)) } catch (e) { d.fill(h('h2', {}, 'Payment'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
 function resolveModal(p, outcomes, done) {
-	const outcome = h('select', { 'aria-label': 'Outcome' }, outcomes.map((o) => h('option', { value: o }, o === 'completed' ? 'Completed: the money moved' : 'Failed: the money did not move')));
-	const note = h('textarea', { rows: 3, maxlength: 300, placeholder: 'What you checked, e.g. "Confirmed in the pawaPay dashboard, payout PAID"' });
+	const outcome = h('select', {}, outcomes.map((o) => h('option', { value: o }, o === 'completed' ? 'Completed: the money moved' : 'Failed: the money did not move')));
+	const note = h('textarea', { rows: 3, maxlength: 300, required: true, placeholder: 'e.g. Confirmed in the pawaPay dashboard, payout PAID' });
 	const err = h('div');
 	const m = overlay([h('h2', {}, 'Resolve payment'), h('p', { class: 'muted' }, 'This overrides the gateway and notifies the tenant by webhook. It cannot be undone.'),
-		field('Outcome', outcome), field('Note', note, '(required, kept in the history)'), err,
+		field('Outcome', outcome), field('What you checked', note, 'Required. It is kept in the payment history and shown to other operators.'), err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-			h('button', { class: 'btn primary', onclick: async (e) => {
-				if (!note.value.trim()) { put(err, h('div', { class: 'alert bad' }, 'A note is required.')); return; }
-				e.target.disabled = true;
-				try { const np = await api('POST', `/admin/payments/${p.id}/resolve`, { outcome: outcome.value, note: note.value }); m.close(); toast('Resolved'); await done(np); } catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
-			} }, 'Resolve'))], { center: true });
+			h('button', { class: 'btn primary', onclick: (e) => {
+				if (!check([[note, note.value.trim() ? null : 'Say what you checked before resolving.']])) return;
+				return act(e, async () => { const np = await api('POST', `/admin/payments/${p.id}/resolve`, { outcome: outcome.value, note: note.value }); m.close(); toast('Resolved'); await done(np); }, { busy: 'Resolving…', errorIn: err });
+			} }, 'Resolve'))], { center: true, dirty: () => !!note.value.trim() });
 }
 
 // ---- tenants --------------------------------------------------------------------------------------------------------------------
@@ -556,12 +688,26 @@ async function shrinkLogo(file) {
 }
 
 function tenantForm(t, taken = []) {
-	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, placeholder: 'made from the name', pattern: SLUG.source.slice(1, -1), spellcheck: 'false', autocomplete: 'off' }),
-		name: h('input', { value: t?.name || '', maxlength: 80, placeholder: t ? null : 'Courtly', autocomplete: 'off' }),
-		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), max: h('input', { type: 'number', min: 100, step: 1, value: t?.max_amount || '', placeholder: 'gateway default' }),
-		ns: h('input', { value: '', placeholder: 'leave empty for new products', spellcheck: 'false' }),
+	const f = { id: h('input', { value: t?.id || '', disabled: t ? true : null, required: true, spellcheck: 'false', autocomplete: 'off' }),
+		name: h('input', { value: t?.name || '', maxlength: 80, required: true, placeholder: t ? null : 'e.g. Courtly', autocomplete: 'off' }),
+		webhook: h('input', { type: 'url', value: t?.webhook_url || '', placeholder: 'https://example.com/paygate/webhook' }), 
+		ns: h('input', { value: '', spellcheck: 'false' }),
 		key: h('input', { type: 'checkbox', checked: true }) };
+	const maxIn = moneyInput({ value: t?.max_amount ?? null, hint: 'Whole FCFA. Leave it empty to use the gateway default.' });
+	f.max = maxIn.input;
+	const snap = () => [f.id, f.name, f.webhook, f.max, f.ns].map((x) => x.value).join('\u0000'), start = snap();
 	const err = h('div'), idHint = h('small', { class: 'hint' });
+	const rules = {
+		name: () => f.name.value.trim() ? null : 'Give the product a name.',
+		id: () => { const v = f.id.value.trim(); return !v ? 'Choose an id.' : !SLUG.test(v) ? 'Start with a letter; 2 to 32 lowercase letters, digits or dashes.' : taken.includes(v) ? 'A tenant already has this id.' : null; },
+		webhook: () => {
+			const v = f.webhook.value.trim();
+			if (!v) return null;
+			try { const u = new URL(v); if (u.protocol === 'https:' || (u.protocol === 'http:' && /^(localhost|127\.0\.0\.1)$/.test(u.hostname))) return null; } catch { /* not a URL */ }
+			return 'Use a full https:// address, e.g. https://example.com/paygate/webhook.';
+		},
+		max: () => { const n = f.max.money(); return n == null || n >= 100 ? null : 'A whole number of FCFA, at least 100: digits and spaces only. Leave it empty to use the gateway default.'; },
+	};
 	// the logo: undefined = unchanged, null = removed, a data: URL = new
 	let logo, current = t?.logo || null;
 	const preview = h('span', { class: 'logo-preview' }), remove = h('button', { class: 'btn sm', type: 'button' }, 'Remove'), pickLabel = h('span');
@@ -570,40 +716,46 @@ function tenantForm(t, taken = []) {
 	pick.addEventListener('change', async () => {
 		const file = pick.files?.[0]; pick.value = '';
 		if (!file) return;
-		try { logo = current = await shrinkLogo(file); put(err); showLogo(); } catch (x) { put(err, h('div', { class: 'alert bad' }, x.message)); }
+		try { logo = current = await shrinkLogo(file); setError(pick, null); showLogo(); } catch (x) { check([[pick, x.message]]); }
 	});
 	remove.addEventListener('click', () => { logo = null; current = null; showLogo(); });
-	const logoField = h('div', { class: 'field' }, h('label', {}, 'Logo ', h('small', {}, '(optional; PNG, JPEG or WebP, shown at 128 px)')),
-		h('div', { class: 'logo-pick' }, preview, h('label', { class: 'btn sm' }, pickLabel, pick), remove));
-	// the id follows the name until someone types in it
+	const logoHint = h('small', { class: 'hint', id: uid('h') }, 'Optional. PNG, JPEG or WebP, shown at 128 px.'), logoErr = h('small', { class: 'field-err', id: uid('e'), hidden: true }), logoLabel = h('span', { class: 'lbl', id: uid('l') }, 'Logo');
+	ERR.set(pick, logoErr);
+	pick.setAttribute('aria-describedby', `${logoHint.id} ${logoErr.id}`);
+	const logoField = h('div', { class: 'field', role: 'group', 'aria-labelledby': logoLabel.id }, logoLabel,
+		h('div', { class: 'logo-pick' }, preview, h('label', { class: 'btn sm' }, pickLabel, pick), remove), logoHint, logoErr);
+	// the id follows the name until someone types in it; the hint says whether it is free
 	let idTouched = false;
 	const checkId = () => {
-		const v = f.id.value.trim();
-		put(idHint, !v ? 'Lowercase letters, digits and dashes. It cannot be changed later.' : !SLUG.test(v) ? h('span', { class: 'bad-text' }, 'Start with a letter; 2 to 32 lowercase letters, digits or dashes.')
-			: taken.includes(v) ? h('span', { class: 'bad-text' }, 'A tenant already has this id.') : [h('code', {}, v), ' is free. It cannot be changed later.']);
+		const v = f.id.value.trim(), bad = rules.id();
+		setError(f.id, v && bad ? bad : null);
+		put(idHint, v && !bad ? [h('code', {}, v), ' is free. It cannot be changed later.'] : 'Lowercase letters, digits and dashes, made from the name. It cannot be changed later.');
 	};
 	if (!t) {
 		f.name.addEventListener('input', () => { if (!idTouched) { f.id.value = slugFor(f.name.value, taken); checkId() } if (!current) showLogo(); });
 		f.id.addEventListener('input', () => { idTouched = f.id.value !== ''; f.id.value = f.id.value.toLowerCase(); checkId() });
-		checkId();
 	}
-	const save = h('button', { class: 'btn primary', onclick: async (e) => {
-		e.target.disabled = true;
-		try {
-			const max = f.max.value.trim() ? Number(f.max.value) : null, wh = f.webhook.value.trim() || null;
+	onBlurCheck(f.name, rules.name); onBlurCheck(f.webhook, rules.webhook); onBlurCheck(f.max, rules.max);
+	// what the server says about a field goes under that field
+	const serverField = fieldFor((x) => ({ tenant_exists: t ? null : f.id, invalid_tenant: /^id\b/.test(x.message) ? (t ? null : f.id) : f.name, invalid_webhook_url: f.webhook, invalid_max_amount: f.max, invalid_id_namespace: f.ns, invalid_logo: pick, logo_too_large: pick })[x.code]);
+	const save = h('button', { class: 'btn primary', onclick: (e) => {
+		if (!check([[f.name, rules.name()], ...(t ? [] : [[f.id, rules.id()]]), [f.webhook, rules.webhook()], [f.max, rules.max()]])) return;
+		return act(e, async () => {
+			const max = f.max.money(), wh = f.webhook.value.trim() || null;
 			if (t) { await api('PATCH', `/admin/tenants/${t.id}`, { name: f.name.value, webhookUrl: wh, maxAmount: max, ...(logo !== undefined ? { logo } : {}) }); m.close(); toast('Saved'); tenantsAt = 0; route(); return; }
 			const id = f.id.value.trim();
 			await api('POST', '/admin/tenants', { id, name: f.name.value, webhookUrl: wh, maxAmount: max, idNamespace: f.ns.value.trim() || null, logo: logo || null });
 			tenantsAt = 0;
 			m.close(); route();
 			if (f.key.checked) await connectModal(id); else tenantDrawer(id);
-		} catch (x) { e.target.disabled = false; put(err, h('div', { class: 'alert bad' }, x.message)); }
+		}, { busy: t ? 'Saving…' : 'Creating…', errorIn: err, onError: serverField });
 	} }, t ? 'Save' : 'Create tenant');
-	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : h('div', { class: 'field' }, h('label', {}, 'Id'), f.id, idHint), logoField,
-		field('Webhook URL', f.webhook, '(https, can be added later)'), field('Max single payment', f.max, '(FCFA)'),
+	const m = overlay([h('h2', {}, t ? `Edit ${t.id}` : 'New tenant'), field('Name', f.name), t ? null : field('Id', f.id, idHint), logoField,
+		field('Webhook URL', f.webhook, 'Where payment events are sent. https only; it can be added later.'), field('Max single payment', f.max, maxIn.hint),
 		t ? null : h('label', { class: 'check mt14' }, f.key, 'Create an API key and show the webhook secret now'),
-		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, '(only for products migrated from another gateway)')), err,
-		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true });
+		t ? null : h('details', { class: 'adv' }, h('summary', {}, 'Advanced'), field('ID namespace', f.ns, 'Only for a product moved from another gateway: keeps its provider ids unchanged. Leave it empty for a new product.')), err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), save)], { center: true, dirty: () => logo !== undefined || snap() !== start });
+	if (!t) checkId();
 	showLogo();
 	f.name.focus();
 }
@@ -612,47 +764,46 @@ function tenantForm(t, taken = []) {
 async function connectModal(id) {
 	let key, secret;
 	try { [key, secret] = await Promise.all([api('POST', `/admin/tenants/${id}/keys`, { label: 'default' }), api('GET', `/admin/tenants/${id}/webhook-secret`)]) }
-	catch (x) { toast(`Tenant created, but: ${x.message}`); return tenantDrawer(id) }
+	catch (x) { toast(`Tenant created, but the key or secret could not be fetched: ${x.message}. Create a key from the tenant.`, { error: true }); return tenantDrawer(id) }
 	const row = (label, value, note) => [h('label', {}, label, note ? h('small', {}, ` ${note}`) : null), h('div', { class: 'copyrow' }, h('code', { class: 'secret' }, value), h('button', { class: 'btn sm', onclick: () => copy(value) }, 'Copy'))];
 	const m = overlay([h('h2', {}, `${id} is ready to connect`), h('p', { class: 'muted' }, 'Give these to the product. The API key is shown only this once: only its hash is stored.'),
 		row('API key', key.key, '(Authorization: Bearer …)'), row('Webhook signing secret', secret.secret, '(can be shown again)'),
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { m.close(); tenantDrawer(id) } }, 'Open tenant'), h('button', { class: 'btn primary', onclick: () => m.close() }, 'Done'))], { center: true });
 }
 async function tenantDrawer(id) {
-	const d = overlay(skDrawer());
+	const d = overlay(skDrawer(), { label: 'Tenant' });
 	const render = async () => {
 		const [t, keys, books] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null)]);
 		const owns = (books?.pools || []).flatMap((p) => p.tenants.filter((x) => x.tenant === id).map((x) => ({ pool: p.pool, ...x })));
-		put(d.box, 
+		d.fill(
 			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			h('div', { class: 'card' }, h('dl', { class: 'kv' }, h('dt', {}, 'Id'), h('dd', { class: 'mono' }, t.id), h('dt', {}, 'Webhook'), h('dd', { class: 'mono' }, t.webhook_url || '–'), h('dt', {}, 'Max payment'), h('dd', {}, t.max_amount ? fmtAmount(t.max_amount) : 'gateway default'),
 				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)),
 				books ? [h('dt', {}, 'Holds'), h('dd', {}, owns.length ? owns.map((x) => h('div', {}, h('strong', { class: x.available < 0 ? 'bad-text' : null }, fmtAmount(x.available)), ` in ${x.pool}`, x.held ? h('span', { class: 'muted' }, ` · ${fmtAmount(x.held)} held`) : null)) : h('span', { class: 'muted' }, 'nothing yet'))] : null)),
 			h('div', { class: 'actions left mb20' },
 				h('button', { class: 'btn', onclick: () => tenantForm(t) }, 'Edit'),
-				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: () => {
+				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, onclick: (e) => {
 					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); route(); };
-					t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : go();
+					return t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : act(e, go, { busy: 'Reactivating…' });
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
 			h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', onclick: () => newKey(id, render) }, 'New key')),
-			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: '' }],
+			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: h('span', { class: 'sr-only' }, 'Actions') }],
 				keys.data.map((k) => h('tr', {}, h('td', { class: 'mono' }, `pgk_${k.id}_…`), h('td', {}, k.label || '–'), h('td', {}, k.revoked_at ? badge('dead') : ago(k.last_used_at)),
 					h('td', {}, k.revoked_at ? h('span', { class: 'muted' }, 'revoked') : h('button', { class: 'btn sm danger', onclick: () => confirmModal('Revoke key?', `pgk_${k.id}_… stops working immediately. Anything still using it will get 401.`, 'Revoke', async () => { await api('DELETE', `/admin/tenants/${id}/keys/${k.id}`); await render(); }) }, 'Revoke')))),
 				'No keys yet.'),
 			h('h2', { class: 'mt22' }, 'Webhook signing secret'),
 			h('div', { class: 'actions left mt0' },
-				h('button', { class: 'btn', onclick: async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); } }, 'Reveal'),
+				h('button', { class: 'btn', onclick: (e) => act(e, async () => { const s = await api('GET', `/admin/tenants/${id}/webhook-secret`); secretModal(`Webhook secret (v${s.version})`, 'Give this to the product so it can verify webhooks. Treat it like a password.', s.secret); }, { busy: 'Revealing…' }) }, 'Reveal'),
 				h('button', { class: 'btn danger', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
 	};
-	try { await render() } catch (e) { put(d.box, h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+	try { await render() } catch (e) { d.fill(h('h2', {}, 'Tenant'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
 }
 function newKey(tenantId, after) {
-	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' });
-	const m = overlay([h('h2', {}, 'New API key'), field('Label', label, '(optional)'), h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-		h('button', { class: 'btn primary', onclick: async (e) => {
-			e.target.disabled = true;
-			try { const k = await api('POST', `/admin/tenants/${tenantId}/keys`, { label: label.value.trim() || undefined }); m.close(); secretModal('API key created', 'Copy it now. Only its hash is stored, so it cannot be shown again.', k.key); await after(); } catch (x) { e.target.disabled = false; toast(x.message); }
-		} }, 'Create'))], { center: true });
+	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' }), err = h('div');
+	const m = overlay([h('h2', {}, 'New API key'), field('Label', label, 'Optional: where the key will be used, so you know which one to revoke.'), err, h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
+		h('button', { class: 'btn primary', onclick: (e) => act(e, async () => {
+			const k = await api('POST', `/admin/tenants/${tenantId}/keys`, { label: label.value.trim() || undefined }); m.close(); secretModal('API key created', 'Copy it now. Only its hash is stored, so it cannot be shown again.', k.key); await after();
+		}, { busy: 'Creating…', errorIn: err }) }, 'Create'))], { center: true });
 }
 
 // ---- failed webhooks ------------------------------------------------------------------------------------------------------------
@@ -679,7 +830,7 @@ function feedItem(e, { compact = false, onChange } = {}) {
 		meta = [payLink(e.paymentId), e.attempts ? plural(e.attempts, 'attempt') : 'not sent yet', e.detail];
 	}
 	const retry = e.source === 'webhook' && e.status !== 'delivered' && !compact
-		? h('button', { class: 'btn sm', onclick: async (ev) => { ev.target.disabled = true; try { await api('POST', `/admin/webhooks/${e.id}/retry`); toast('Queued for delivery'); onChange?.() } catch (x) { ev.target.disabled = false; toast(x.message) } } }, e.status === 'dead' ? 'Retry' : 'Send now')
+		? h('button', { class: 'btn sm', onclick: (ev) => act(ev, async () => { await api('POST', `/admin/webhooks/${e.id}/retry`); toast('Queued for delivery'); onChange?.() }, { busy: 'Queuing…' }) }, e.status === 'dead' ? 'Retry' : 'Send now')
 		: null;
 	const body = !compact && e.body ? h('details', { class: 'ev-body' }, h('summary', {}, e.source === 'callback' ? 'Body as received' : 'Payload'), h('pre', {}, pretty(e.body))) : null;
 	return h('li', { class: `ev${e.problem ? ' problem' : ''}` },
@@ -701,7 +852,7 @@ async function events(main) {
 	const q = new URLSearchParams(location.hash.split('?')[1] || '');
 	let source = ['payment', 'callback', 'webhook'].includes(q.get('source')) ? q.get('source') : '';
 	const problems = h('input', { type: 'checkbox', checked: q.get('problems') === '1' ? true : null });
-	const tenant = h('input', { placeholder: 'Tenant id', value: q.get('tenant') || '', 'aria-label': 'Tenant', size: 12 });
+	const tenant = tenantSelect(q.get('tenant') || '');
 	const payment = h('input', { placeholder: 'Payment id', value: q.get('payment') || '', 'aria-label': 'Payment id', size: 22 });
 	const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Source' });
 	const drawSeg = () => put(seg, [['', 'All'], ['payment', 'Payments'], ['callback', 'Callbacks in'], ['webhook', 'Webhooks out']].map(([v, l]) =>
