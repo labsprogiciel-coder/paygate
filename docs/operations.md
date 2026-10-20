@@ -86,6 +86,19 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 2. Asks the provider about open payments not looked at for a minute; sends a disbursement that was recorded but never sent; looks again, hourly, at failed or expired payments of the last day (a week for PI-SPI) in case they completed late.
 3. Every fifth minute: checks the wallets (alerts at most once per 12 hours per country and level).
 4. Copies new ledger postings to Formance, if it is set up. At 03:00 UTC: checks the books against the wallets and Formance.
+5. At 03:05 UTC: prunes old data (see Retention).
+
+## Retention
+
+D1 allows 10 GB per database. The overview shows the current size; an alert goes out above 80%.
+
+| Data | Kept |
+|---|---|
+| Payments, their history (`payment_events`), the journal (`ledger_postings`) | Forever: the financial record |
+| Provider callbacks (`provider_events`) | The last 1000 |
+| Webhook deliveries | The row forever; its **payload** is emptied 30 days after delivery (the payment and its history hold the same facts). Test pings are deleted after 30 days. Dead and pending deliveries are never touched |
+
+The prune runs daily at 03:05 UTC in batches (`src/retention.ts`); a backlog is worked through over the following days.
 
 ## Runbook
 

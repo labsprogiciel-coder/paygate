@@ -3,6 +3,7 @@
  * Each source is read with its own query and the three are merged here. Order is (time, id) descending, and the cursor is the last item's `<at>:<id>`,
  * so events sharing a timestamp are never skipped or repeated across pages.
  */
+import { databaseBytes, DB_LIMIT_BYTES } from './retention.ts';
 
 export type Source = 'payment' | 'callback' | 'webhook';
 export const SOURCES: readonly Source[] = ['payment', 'callback', 'webhook'];
@@ -73,7 +74,7 @@ export async function eventFeed(env: Env, q: FeedQuery = {}): Promise<{ data: Fe
 			.all<{ id: string; tenant_id: string; payment_id: string; type: string; payload: string; status: string; attempts: number; last_status: number | null; last_error: string | null; created_at: number }>()
 			.then(({ results }) => results.map((r) => ({
 				source: 'webhook' as const, id: r.id, at: r.created_at, type: r.type, status: r.status, problem: r.status === 'dead',
-				tenant: r.tenant_id, paymentId: r.payment_id || null, actor: null, detail: r.last_error ?? (r.last_status ? `HTTP ${r.last_status}` : null), attempts: r.attempts, body: r.payload,
+				tenant: r.tenant_id, paymentId: r.payment_id || null, actor: null, detail: r.last_error ?? (r.last_status ? `HTTP ${r.last_status}` : null), attempts: r.attempts, body: r.payload || null, // emptied after KEEP_PAYLOAD_DAYS (retention.ts)
 			}))));
 	}
 
@@ -89,5 +90,5 @@ export async function attention(env: Env, now = Date.now()) {
 		(SELECT COUNT(*) FROM payments WHERE status = 'unknown') AS unknown,
 		(SELECT COUNT(*) FROM webhook_deliveries WHERE status = 'dead') AS dead,
 		(SELECT COUNT(*) FROM provider_events WHERE accepted = 0 AND received_at >= ?) AS rejected`).bind(now - 86_400_000).first<{ unknown: number; dead: number; rejected: number }>();
-	return { unknown: r?.unknown ?? 0, deadWebhooks: r?.dead ?? 0, rejectedCallbacks24h: r?.rejected ?? 0 };
+	return { unknown: r?.unknown ?? 0, deadWebhooks: r?.dead ?? 0, rejectedCallbacks24h: r?.rejected ?? 0, database: { bytes: await databaseBytes(env), limit: DB_LIMIT_BYTES } };
 }
