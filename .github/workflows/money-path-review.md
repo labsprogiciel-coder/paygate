@@ -32,6 +32,8 @@ tools:
   github:
     mode: gh-proxy
     toolsets: [repos, pull_requests]
+    allowed-repos: ["labsprogiciel-coder/paygate"]
+    min-integrity: approved # what gh-aw already applies to a public repository; stated because allowed-repos requires it
 
 safe-outputs:
   messages:
