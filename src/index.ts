@@ -12,6 +12,7 @@ import { getProviders } from './providers/index.ts';
 import type { Providers } from './providers/types.ts';
 import { rateLimit } from './ratelimit.ts';
 import { reconcile } from './reconcile.ts';
+import { reconcileReturns } from './returns.ts';
 import { prune } from './retention.ts';
 import { authenticate, type Tenant } from './tenants.ts';
 import { deliverDue, queuePing } from './webhooks.ts';
@@ -145,12 +146,13 @@ export async function handle(request: Request, env: Env, ctx: ExecutionContext):
 export default Sentry.withSentry((env: Env) => sentryOptions(env), {
 	fetch: handle,
 
-	/** Every minute: deliver webhooks, settle what the callbacks missed, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. At :05 every hour: prune old webhook payloads. Each step fails alone. */
+	/** Every minute: deliver webhooks, settle what the callbacks missed, follow PI-SPI returns of funds, copy the books to Formance. Every fifth minute: check the float. At 03:00 UTC: check the books. At :05 every hour: prune old webhook payloads. Each step fails alone. */
 	async scheduled(controller: ScheduledController, env: Env): Promise<void> {
 		const run = async (name: string, f: () => Promise<unknown>) => { try { await f(); } catch (e) { console.error(JSON.stringify({ msg: 'cron.failed', step: name, error: e instanceof Error ? e.message : String(e) })); reportError(e, { where: 'cron', step: name }); } };
 		const providers = getProviders(env);
 		await run('webhooks', () => deliverDue(env));
 		await run('reconcile', () => reconcile(env, providers));
+		await run('returns', () => reconcileReturns(env));
 		if (new Date(controller.scheduledTime).getUTCMinutes() % 5 === 0) await run('float', () => checkFloat(env, providers));
 		await run('ledger', () => postPending(env));
 		const at = new Date(controller.scheduledTime);

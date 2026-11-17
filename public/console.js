@@ -751,6 +751,7 @@ async function payments(main) {
 }
 async function paymentDrawer(id) {
 	const d = overlay(skDrawer(), { label: 'Payment' });
+	const reload = async () => render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`));
 	const render = (p) => {
 		const resolvable = p.status === 'processing' || p.status === 'unknown' ? ['completed', 'failed'] : p.status === 'failed' || p.status === 'expired' ? ['completed'] : [];
 		const row = (k, v) => v == null || v === '' ? null : [h('dt', {}, k), h('dd', {}, v)];
@@ -761,12 +762,38 @@ async function paymentDrawer(id) {
 				row('Tenant', tenantChip(p.tenant)), row('Type', p.object), row('Reference', h('span', { class: 'mono' }, p.reference)), row('PSP partner', pspBadge(p)), row(p.rail === 'mobile_money' ? 'Channel (MNO)' : 'Channel', h('span', { class: 'chan' }, icon(p), channel(p))), row('Rail', p.rail), row('Origin', COUNTRY[p.country] ? h('span', { class: 'chan' }, origin(p), COUNTRY[p.country][1]) : null), row('Amount', fmtAmount(p.amount)), row('Counterparty', h('span', { class: 'mono' }, p.counterparty || '')),
 				row('PSP payment id', h('span', { class: 'mono' }, p.providerId || '')), row('PSP settlement ref', h('span', { class: 'mono' }, p.providerRef || '')),
 				row('Created', fmtTime(p.createdAt)), row('Expires', p.expiresAt ? fmtTime(p.expiresAt) : null), row('Settled', p.settledAt ? fmtTime(p.settledAt) : null), row('Attempts', String(p.attempts)),
-				row('Failure shown', p.failure), row('Failure detail', p.failureDetail), row('Metadata', p.metadata ? h('pre', {}, JSON.stringify(p.metadata, null, 2)) : null))),
-			resolvable.length ? h('div', { class: 'actions mb16' }, h('button', { class: 'btn primary', onclick: () => resolveModal(p, resolvable, async (np) => { render({ ...np, events: (await api('GET', `/admin/payments/${p.id}`)).events }); }) }, 'Resolve manually…')) : null,
+				row('Failure shown', p.failure), row('Failure detail', p.failureDetail), row('Metadata', p.metadata ? h('pre', {}, JSON.stringify(p.metadata, null, 2)) : null),
+				p.returnStatus ? row('Returned to payer', h('div', {}, returnBadge(p.returnStatus), p.returnedAt ? ` ${fmtTime(p.returnedAt)}` : '', p.returnReason ? h('div', { class: 'muted small' }, p.returnReason) : null, p.returnDetail ? h('div', { class: 'bad-text small' }, p.returnDetail) : null)) : null)),
+			resolvable.length || p.returnable?.ok ? h('div', { class: 'actions left mb16' },
+				resolvable.length ? h('button', { class: 'btn primary', 'data-key': 'resolve', onclick: () => resolveModal(p, resolvable, reload) }, 'Resolve manually…') : null,
+				p.returnable?.ok ? h('button', { class: 'btn danger', 'data-key': 'return', onclick: () => returnModal(p, reload) }, 'Return funds…') : null) : null,
 			h('h2', {}, 'History'),
 			h('ul', { class: 'timeline' }, p.events.map((e) => h('li', {}, h('strong', {}, e.type), e.type === 'late_completion' ? h('span', { class: 'badge late ml8' }, 'late') : null, ' ', h('span', { class: 'muted' }, `by ${e.actor}`), e.detail ? h('div', {}, e.detail) : null, h('div', { class: 't' }, fmtTime(e.created_at))))));
 	};
 	try { render(await api('GET', `/admin/payments/${encodeURIComponent(id)}`)) } catch (e) { d.fill(h('h2', {}, 'Payment'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+}
+const RETURN_BADGE = { requested: ['returning', 's-processing'], initiated: ['returning', 's-processing'], returned: ['returned', 's-completed'], rejected: ['return rejected', 's-failed'] };
+const returnBadge = (s) => h('span', { class: `badge ${(RETURN_BADGE[s] || [s, 's-idle'])[1]}` }, (RETURN_BADGE[s] || [s])[0]);
+/** Sends a received PI-SPI payment back to its payer, in full. Money leaves the account: it says so, and wants a reason. */
+function returnModal(p, done) {
+	const reason = h('textarea', { rows: 3, maxlength: 300, required: true, placeholder: 'e.g. Order cancelled by the customer; paid 4 000 instead of 5 000' });
+	const why = () => reason.value.trim() ? null : 'Say why the money goes back.';
+	onBlurCheck(reason, why);
+	const err = h('div');
+	const m = overlay([h('h2', {}, 'Return funds to the payer'),
+		h('p', {}, 'Sends ', h('strong', {}, fmtAmount(p.amount)), ` back to the payer's bank account through PI-SPI (payment ${p.returnable.end2endId}). PI-SPI always returns the whole amount.`),
+		h('p', { class: 'muted' }, p.status === 'completed' ? 'The amount is taken back from what the product holds, and the product is told by webhook once the return is final. It cannot be undone.' : 'This payment did not settle the order, so the books do not change. It cannot be undone.'),
+		field('Why', reason, 'Required. Kept in the payment history.'), err,
+		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
+			h('button', { class: 'btn danger', onclick: (e) => {
+				if (!check([[reason, why()]])) return;
+				return act(e, async () => {
+					const np = await api('POST', `/admin/payments/${p.id}/return`, { reason: reason.value });
+					m.close(); toast(np.returnStatus === 'returned' ? 'Returned to the payer' : np.returnStatus === 'rejected' ? 'PI-SPI rejected the return' : 'Return sent: it is followed until final', np.returnStatus === 'rejected' ? { error: true } : undefined);
+					await done();
+				}, { busy: 'Sending…', errorIn: err, onError: fieldFor({ invalid_reason: reason }) });
+			} }, 'Return funds'))], { center: true, dirty: () => !!reason.value.trim() });
+	reason.focus();
 }
 function resolveModal(p, outcomes, done) {
 	const outcome = h('select', {}, outcomes.map((o) => h('option', { value: o }, o === 'completed' ? 'Completed: the money moved' : 'Failed: the money did not move')));

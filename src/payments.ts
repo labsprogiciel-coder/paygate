@@ -15,7 +15,11 @@ export interface PaymentRow {
 	auth_type: string | null; method: string | null; next_step: string | null; auth_url: string | null; failure: string | null; failure_detail: string | null;
 	request_hash: string; metadata: string | null; attempts: number; last_checked_at: number | null; expires_at: number | null;
 	created_at: number; updated_at: number; settled_at: number | null;
+	return_status: ReturnStatus | null; return_ref: string | null; return_reason: string | null; return_detail: string | null;
+	return_requested_at: number | null; return_checked_at: number | null; returned_at: number | null;
 }
+/** A return of funds to the payer (PI-SPI): see src/returns.ts. */
+export type ReturnStatus = 'requested' | 'initiated' | 'returned' | 'rejected';
 
 type Instructions = { en: string[]; fr: string[] };
 
@@ -25,6 +29,8 @@ export interface PaymentView {
 	nextStep: string | null; authUrl: string | null; qr: PispiQr | null;
 	method: { authType: string | null; instructions: Instructions | null; codeInstructions: Instructions | null } | null;
 	failure: string | null; metadata: unknown; createdAt: number; expiresAt: number | null; settledAt: number | null;
+	/** money sent back to the payer by an operator: pending while PI-SPI sends it, refunded once it is irrevocable, failed if PI-SPI rejected it */
+	refund: { status: 'pending' | 'refunded' | 'failed'; requestedAt: number | null; refundedAt: number | null } | null;
 }
 
 export function view(env: Env, r: PaymentRow): PaymentView {
@@ -42,6 +48,7 @@ export function view(env: Env, r: PaymentRow): PaymentView {
 		qr: r.rail === 'pispi_qr' && open ? pispiQr(env, r) : null, method,
 		failure: r.status === 'failed' ? r.failure : null,
 		metadata: r.metadata ? JSON.parse(r.metadata) : null, createdAt: r.created_at, expiresAt: r.expires_at, settledAt: r.settled_at,
+		refund: r.return_status ? { status: r.return_status === 'returned' ? 'refunded' : r.return_status === 'rejected' ? 'failed' : 'pending', requestedAt: r.return_requested_at, refundedAt: r.returned_at } : null,
 	};
 }
 
@@ -54,11 +61,11 @@ export const getRowFor = (env: Env, tenantId: string, kind: Kind, idOrReference:
 const SETTLES = new Set<Status>(['completed', 'failed', 'expired']);
 const EVENT_ID = (paymentId: string, version: number) => `evt_${paymentId}_${version}`;
 
-/** One webhook outbox row, written only for a tenant that has a webhook URL. */
-function outbox(env: Env, tenantId: string, id: string, paymentId: string, type: string, data: PaymentView, extra: Record<string, unknown>, now: number) {
+/** One webhook outbox row, written only for a tenant that has a webhook URL (and, given `onlyIf`, only if that SQL condition holds in the same batch). */
+export function outbox(env: Env, tenantId: string, id: string, paymentId: string, type: string, data: PaymentView, extra: Record<string, unknown>, now: number, onlyIf?: { sql: string; binds: unknown[] }) {
 	const payload = JSON.stringify({ id, type, createdAt: now, data, ...extra });
-	return env.DB.prepare(`INSERT OR IGNORE INTO webhook_deliveries (id, tenant_id, payment_id, type, payload, next_attempt_at, created_at) SELECT ?, id, ?, ?, ?, ?, ? FROM tenants WHERE id = ? AND webhook_url IS NOT NULL`)
-		.bind(id, paymentId, type, payload, now, now, tenantId);
+	return env.DB.prepare(`INSERT OR IGNORE INTO webhook_deliveries (id, tenant_id, payment_id, type, payload, next_attempt_at, created_at) SELECT ?, id, ?, ?, ?, ?, ? FROM tenants WHERE id = ? AND webhook_url IS NOT NULL${onlyIf ? ` AND ${onlyIf.sql}` : ''}`)
+		.bind(id, paymentId, type, payload, now, now, tenantId, ...(onlyIf?.binds ?? []));
 }
 
 export interface Applied { applied: boolean; row: PaymentRow }
