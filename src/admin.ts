@@ -10,8 +10,8 @@ import { attention, eventFeed, SOURCES, type Source } from './events.ts';
 import { adjustPool, backfillLedger, booksReport, retryStuck } from './ledger.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
-import { createWallet, listWallets, pispiCountry, setTenantWallet, tenantWallets, updateWallet } from './wallets.ts';
-import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
+import { createWallet, listWallets, setTenantWallet, tenantWallets, updateWallet } from './wallets.ts';
+import { missingSecrets, pispiAccounts, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 
 /**
  * The operator API: tenants, their keys and webhook secrets, payments that need a person, undeliverable events. Never reachable with a tenant key.
@@ -163,8 +163,10 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 			loadFloat(env, providers).then((f) => ({ f, error: null }), (e: unknown) => ({ f: null, error: e instanceof Error ? e.message : String(e) })),
 		]);
 		const sandbox = providers.mode === 'sandbox';
-		const iso3 = pispiCountry(env);
-		const alias = pispiAlias(env), pispiOn = pispiEnabled(env);
+		// every PI-SPI account (one per country): its alias, participant, and which of its secrets are missing (names only)
+		const accounts = await pispiAccounts(env);
+		const live = accounts.filter((a) => a.status === 'active' && pispiEnabled(env, a)), pispiOn = live.length > 0;
+		const mask = (v: string) => v.length > 14 ? `${v.slice(0, 8)}…${v.slice(-4)}` : v;
 		const rail = (open: boolean) => ({ status: open ? 'OPERATIONAL' : 'CLOSED', min: null, max: null });
 		const list = [
 			{ id: sandbox ? 'sandbox' : 'pawapay', name: sandbox ? 'Sandbox (simulated)' : 'pawaPay', role: 'Mobile money (MNO aggregator)', rails: ['mobile_money'], active: true,
@@ -177,13 +179,17 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 				accountsNote: sandbox ? 'The sandbox has no wallets: nothing is paid out.' : float.error ? `Wallet balances could not be read: ${float.error}` : null },
 			{ id: 'pispi', name: 'PI-SPI (BCEAO)', role: 'Instant bank payments', rails: ['pispi_qr', 'pispi_rtp'], active: pispiOn,
 				environment: /simulateur|sandbox/i.test(env.PI_SPI_BUSINESS_API_URL || '') ? 'Simulator' : pispiOn ? 'Live' : 'Off', endpoint: env.PI_SPI_BUSINESS_API_URL || null,
-				notes: pispiOn ? [`QR ${pispiPollEnabled(env) ? 'auto-confirmed (polling)' : 'confirmed by an operator'}`, `payment requests ${pispiRtpEnabled(env) ? 'on' : 'off'}`] : [alias === null && on(env.PISPI_ENABLED) ? 'PI_SPI_ACCOUNT_ALIAS is not set' : 'disabled'],
-				channels: [
-					{ country: iso3, operator: 'bank', code: 'PISPI_QR', collect: rail(pispiOn), payout: null },
-					{ country: iso3, operator: 'bank', code: 'PISPI_RTP', collect: rail(pispiRtpEnabled(env)), payout: null },
-				], channelsError: null,
-				accounts: alias ? [{ kind: 'alias', label: 'Receiving alias', country: iso3, currency: 'XOF', value: alias.length > 14 ? `${alias.slice(0, 8)}…${alias.slice(-4)}` : alias, participant: env.PI_SPI_PARTICIPANT || null }] : [],
-				accountsNote: alias ? 'Customers pay into this alias; PI-SPI reports no balance and pays out nothing here.' : 'No receiving alias: set PI_SPI_ACCOUNT_ALIAS.' },
+				notes: !on(env.PISPI_ENABLED) ? ['disabled'] : pispiOn ? [`${live.length} of ${accounts.length} accounts on`, `QR ${live.some((a) => pispiPollEnabled(env, a)) ? 'auto-confirmed (polling)' : 'confirmed by an operator'}`, `payment requests ${live.some((a) => pispiRtpEnabled(env, a)) ? 'on' : 'off'}`] : ['no account is set up'],
+				channels: accounts.flatMap((a) => {
+					const country = a.wallet.split(':')[0]!, open = a.status === 'active';
+					return [
+						{ country, operator: 'bank', code: 'PISPI_QR', collect: rail(open && pispiEnabled(env, a)), payout: null },
+						{ country, operator: 'bank', code: 'PISPI_RTP', collect: rail(open && pispiRtpEnabled(env, a)), payout: null },
+					];
+				}), channelsError: null,
+				accounts: accounts.map((a) => ({ kind: 'alias', label: `${a.wallet} receiving alias`, wallet: a.wallet, country: a.wallet.split(':')[0], currency: 'XOF', value: a.alias ? mask(a.alias) : null, participant: a.participant || null,
+					status: a.status, secretsPrefix: a.prefix, missing: missingSecrets(a) })),
+				accountsNote: accounts.length ? 'One account per country. Customers pay into its alias; PI-SPI reports no balance.' : 'No PI-SPI wallet is registered.' },
 		];
 		return json({ data: list, last24h: results, floor: Number(env.FLOAT_FLOOR_XOF) });
 	}

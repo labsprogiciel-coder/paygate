@@ -7,11 +7,11 @@ import { checkFloat, loadFloat } from './float.ts';
 import { checkBooks, postPending } from './ledger.ts';
 import type { Kind } from './ids.ts';
 import { createPayment, getRowFor, history, listPayments, refresh, view } from './payments.ts';
-import { pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
+import { loadPispiAccount, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 import { getProviders } from './providers/index.ts';
 import type { Providers, Rail } from './providers/types.ts';
 import { parsePhone } from './providers/phone.ts';
-import { tenantWallets, walletFor, walletRefusal } from './wallets.ts';
+import { countryCode, tenantWallets, walletFor, walletRefusal } from './wallets.ts';
 import { rateLimit } from './ratelimit.ts';
 import { reconcile } from './reconcile.ts';
 import { reconcileReturns } from './returns.ts';
@@ -80,19 +80,30 @@ async function tenantApi(env: Env, request: Request, ctx: ExecutionContext, path
 
 /** Whether a way of paying is available, and its limits: ask BEFORE showing a customer an option they cannot use. */
 async function methods(env: Env, tenant: Tenant, url: URL, providers: Providers) {
+	const rail = url.searchParams.get('rail') ?? 'mobile_money';
+	if (rail === 'pispi_qr' || rail === 'pispi_rtp') {
+		// the PI-SPI account of the country asked for, or the product's only one; then whether it is set up for this way of paying
+		const asked = url.searchParams.get('country');
+		const country = asked ? countryCode(asked) : null;
+		if (asked && !country) throw new ApiError(400, 'invalid_country', 'country is CIV, SEN or BFA (or CI, SN, BF)');
+		const walletId = await walletFor(env, tenant.id, rail, country, 'collection');
+		const why = await walletRefusal(env, tenant.id, walletId, 'collection');
+		const account = await loadPispiAccount(env, walletId);
+		const base = { rail, direction: 'collect', wallet: walletId, country: walletId.split(':')[0] };
+		if (why) return { ...base, available: false, reason: why };
+		return rail === 'pispi_qr' ? { ...base, available: pispiEnabled(env, account), manualConfirmation: !pispiPollEnabled(env, account) } : { ...base, available: pispiRtpEnabled(env, account) };
+	}
 	const r = await railMethods(env, url, providers);
 	if (!r.available) return r;
 	// the provider can, but may this product? (the wallets registry, src/wallets.ts)
-	const country = r.rail === 'mobile_money' ? parsePhone((url.searchParams.get('phone') ?? '').replace(/[\s\-()]/g, ''))?.country ?? null : null;
-	if (r.rail === 'mobile_money' && !country) return r;
-	const why = await walletRefusal(env, tenant.id, walletFor(env, r.rail, country), r.direction === 'disburse' ? 'disbursement' : 'collection');
+	const country = parsePhone((url.searchParams.get('phone') ?? '').replace(/[\s\-()]/g, ''))?.country ?? null;
+	if (!country) return r;
+	const why = await walletRefusal(env, tenant.id, `${country}:PAWAPAY`, r.direction === 'disburse' ? 'disbursement' : 'collection');
 	return why ? { rail: r.rail, direction: r.direction, available: false, reason: why } : r;
 }
 
 async function railMethods(env: Env, url: URL, providers: Providers): Promise<{ rail: Rail; direction: string; available: boolean; [k: string]: unknown }> {
 	const rail = url.searchParams.get('rail') ?? 'mobile_money';
-	if (rail === 'pispi_qr') return { rail, available: pispiEnabled(env), direction: 'collect', manualConfirmation: !pispiPollEnabled(env) };
-	if (rail === 'pispi_rtp') return { rail, available: pispiRtpEnabled(env), direction: 'collect' };
 	if (rail !== 'mobile_money') throw new ApiError(400, 'invalid_rail', 'rail is mobile_money, pispi_qr or pispi_rtp');
 	// (from here the rail is mobile_money)
 	const operator = url.searchParams.get('operator') ?? '', phone = (url.searchParams.get('phone') ?? '').replace(/[\s\-()]/g, '');

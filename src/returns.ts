@@ -2,8 +2,8 @@ import { alert } from './alerts.ts';
 import { ApiError } from './errors.ts';
 import { syncLedger } from './ledger.ts';
 import { getRow, outbox, view, type PaymentRow, type ReturnStatus } from './payments.ts';
-import { pispiReturnsEnabled, returnFunds, returnStatus, type ReturnState } from './providers/pispi.ts';
-import { log } from './util.ts';
+import { loadPispiAccount, pispiReturnsEnabled, returnFunds, returnStatus, type ReturnState } from './providers/pispi.ts';
+import { log, on } from './util.ts';
 
 /**
  * Returns of funds: an operator sends a received PI-SPI payment back to its payer, in full (PUT /paiements/{end2endId}/retours). Products cannot
@@ -22,7 +22,8 @@ const CHECK_EVERY_MS = 60_000;
 /** The received payment that would be sent back, or why this payment cannot be returned. */
 export async function returnable(env: Env, r: PaymentRow): Promise<{ ok: true; end2endId: string } | { ok: false; reason: string }> {
 	if (r.provider !== 'pispi' || r.kind !== 'collection') return { ok: false, reason: 'Only PI-SPI collections can be returned' };
-	if (!pispiReturnsEnabled(env)) return { ok: false, reason: 'Returns are switched off (PISPI_RETURNS)' };
+	if (!on(env.PISPI_RETURNS)) return { ok: false, reason: 'Returns are switched off (PISPI_RETURNS)' };
+	if (!pispiReturnsEnabled(env, await loadPispiAccount(env, r.wallet_id))) return { ok: false, reason: `The PI-SPI account of ${r.wallet_id ?? 'this payment'} is not set up to send returns` };
 	if (r.return_status && r.return_status !== 'rejected') return { ok: false, reason: r.return_status === 'returned' ? 'Already returned' : 'A return is already on its way' };
 	if (r.status === 'completed') {
 		if (!r.provider_ref || r.provider_ref.startsWith('manual')) return { ok: false, reason: 'Completed by hand: no PI-SPI payment to send back' };
@@ -53,8 +54,10 @@ export async function requestReturn(env: Env, id: string, reason: string, adminN
 export async function advance(env: Env, r: PaymentRow, now = Date.now()): Promise<PaymentRow> {
 	if (!r.return_ref || (r.return_status !== 'requested' && r.return_status !== 'initiated')) return r;
 	await env.DB.prepare(`UPDATE payments SET return_checked_at = ? WHERE id = ?`).bind(now, r.id).run();
+	const account = await loadPispiAccount(env, r.wallet_id); // sent back from the account that received it
+	if (!pispiReturnsEnabled(env, account)) { log('payment.return_account_off', { id: r.id, wallet: account.wallet }); return r; }
 	let s: ReturnState;
-	try { s = r.return_status === 'requested' ? await returnFunds(env, r.return_ref, now) : await returnStatus(env, r.return_ref, now); }
+	try { s = r.return_status === 'requested' ? await returnFunds(account, r.return_ref, now) : await returnStatus(account, r.return_ref, now); }
 	catch (e) { log('payment.return_unreachable', { id: r.id, error: e instanceof Error ? e.message : String(e) }); return r; }
 	if (s.state === 'unsent') return r.return_status === 'initiated' ? move(env, r, 'requested', null, now) : r; // PI-SPI lost it: send it again
 	if (s.state === 'initiated') return move(env, r, 'initiated', null, now);
@@ -84,7 +87,7 @@ async function move(env: Env, r: PaymentRow, to: ReturnStatus, detail: string | 
 
 /** The cron: every return still on its way, looked at once a minute at most. */
 export async function reconcileReturns(env: Env, now = Date.now()): Promise<{ checked: number }> {
-	if (!pispiReturnsEnabled(env)) return { checked: 0 };
+	if (!on(env.PISPI_RETURNS)) return { checked: 0 };
 	const { results } = await env.DB.prepare(`SELECT * FROM payments WHERE return_status IN ('requested', 'initiated') AND (return_checked_at IS NULL OR return_checked_at < ?) ORDER BY COALESCE(return_checked_at, 0) LIMIT 10`).bind(now - CHECK_EVERY_MS).all<PaymentRow>();
 	for (const r of results) await advance(env, r, now);
 	return { checked: results.length };

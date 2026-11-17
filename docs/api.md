@@ -16,7 +16,7 @@ Every `/v1` call carries `Authorization: Bearer pgk_<id>_<secret>`. The operator
 
 | Status | Codes |
 |---|---|
-| 400 | `invalid_request` `invalid_json` `invalid_reference` `invalid_amount` `invalid_currency` `invalid_rail` `invalid_operator` `invalid_phone` `invalid_payer_alias` `invalid_metadata` `invalid_url` `invalid_expiry` `invalid_pre_auth_code` |
+| 400 | `invalid_request` `invalid_json` `invalid_reference` `invalid_amount` `invalid_currency` `invalid_rail` `invalid_operator` `invalid_phone` `invalid_payer_alias` `invalid_metadata` `invalid_url` `invalid_expiry` `invalid_pre_auth_code` `invalid_country` `country_required` |
 | 401 | `unauthorized` |
 | 404 | `not_found` |
 | 409 | `idempotency_conflict` |
@@ -122,6 +122,7 @@ Every payment goes through one wallet: a mobile money payment through the pawaPa
 - Settlement is by PI-SPI's own record of received payments, never the customer's word: irrevocable, on our alias, the right category, **exactly** the amount. Otherwise `payment.mismatch`. One bank payment settles one payment only.
 - With polling off (`PISPI_POLL`), nothing settles automatically: an operator confirms with `POST /admin/payments/{id}/resolve`.
 - `pispi_rtp` sends the customer a payment request. A customer is sent at most 3 per day.
+- **Which country.** A PI-SPI account collects in one country. Send `country` (`CIV`, `SEN`, `BFA`, or `CI`, `SN`, `BF`) to pick the account. Leave it out while your account has PI-SPI in one country only. With two or more, a request without it gets `400 country_required` (with `countries`). The QR's `alias` and `countryCode` are that account's. `GET /v1/methods?rail=pispi_qr&country=SEN` says whether it is available, and which `wallet` it uses. `country` is part of the request for idempotency when you send it.
 - **Refunds.** An operator can send a received PI-SPI payment back to its payer, in full (PI-SPI returns the whole amount; there is no partial refund). Ask the operator; products cannot start one. While it is on its way the payment's `refund` is `{ "status": "pending", "requestedAt": … }`; once it is irrevocable it is `"refunded"` with `refundedAt`, and you get `payment.refunded`. If PI-SPI rejects it, `refund.status` is `"failed"` and the operator decides what next. The payment's own `status` stays `completed`: the money did arrive. A refund of a mismatched payment (wrong amount) shows the same way on that payment.
 
 ## Operator API (`Authorization: Bearer <ADMIN_API_KEY or an operator's Clerk session token>`)

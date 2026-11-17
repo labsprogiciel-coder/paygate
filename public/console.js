@@ -731,8 +731,12 @@ function pspSection(p, rows) {
 
 	// receiving aliases are configuration, so they stay here; wallet balances, floors and cover are on Wallets
 	const aliases = p.accounts.filter((a) => a.kind === 'alias'), wallets = p.accounts.length - aliases.length;
-	const alias = (a) => h('div', { class: 'acct' }, h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), a.label), h('span', { class: 'badge s-info' }, 'collections in')),
-		h('code', { class: 'acct-val' }, a.value), a.participant ? h('div', { class: 'muted small' }, `Participant ${a.participant}`) : null);
+	// one PI-SPI account per country: its alias, participant, and the names of the secrets it still needs (never their values)
+	const alias = (a) => h('div', { class: 'acct' }, h('div', { class: 'acct-top' }, h('span', { class: 'chan' }, flag(a.country), a.wallet || a.label),
+			a.status === 'off' ? badge('off') : a.missing?.length ? h('span', { class: 'badge s-failed' }, 'not set up') : h('span', { class: 'badge s-info' }, 'collections in')),
+		a.value ? h('code', { class: 'acct-val' }, a.value) : h('div', { class: 'muted small' }, 'No receiving alias'),
+		a.participant ? h('div', { class: 'muted small' }, `Participant ${a.participant}`) : null,
+		a.missing?.length ? h('div', { class: 'small bad-text' }, 'Missing secrets: ', a.missing.map((m, i) => [i ? ', ' : '', h('code', {}, m)])) : null);
 	const side = p.id === 'pispi' || aliases.length;
 
 	return h('section', { class: `psp${p.active ? '' : ' off'}` },
