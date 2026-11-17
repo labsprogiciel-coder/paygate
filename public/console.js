@@ -546,13 +546,17 @@ const back = (href, label) => h('a', { class: 'back', href }, `← ${label}`);
 
 // ---- books ----------------------------------------------------------------------------------------------------------------------
 // Who owns the money in each wallet: the journal per product, beside what the wallet really holds and what Formance has.
-const POOL_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso', PISPI: 'PI-SPI bank account' };
+const COUNTRY_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso' };
+/** A pool is a wallet id, <country>:<rail> (CIV:PAWAPAY, CIV:PISPI): one per real account. */
+const isPispi = (pool) => pool.endsWith(':PISPI');
+const poolCountry = (pool) => COUNTRY_NAME[pool.split(':')[0]] || pool.split(':')[0];
+const poolName = (pool) => `${isPispi(pool) ? 'PI-SPI' : 'pawaPay'} · ${poolCountry(pool)}`;
 const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
 const WALLETS_SUB = 'What each wallet holds and whether the books account for all of it. Open a wallet to see which product owns what.';
 async function walletsPage(main, id) {
 	const soft = (e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; };
 	const [b, prov, reg] = await Promise.all([api('GET', '/admin/ledger'), api('GET', '/admin/providers').catch(soft), id ? api('GET', '/admin/wallets').catch(soft) : null, id ? loadTenants() : null]);
-	const accounts = Object.fromEntries((prov?.data || []).flatMap((p) => p.accounts.filter((a) => a.kind !== 'alias').map((a) => [a.country, a])));
+	const accounts = Object.fromEntries((prov?.data || []).flatMap((p) => p.accounts.filter((a) => a.kind !== 'alias').map((a) => [`${a.country}:PAWAPAY`, a])));
 	const floor = prov?.floor ?? null;
 	if (id) {
 		const p = b.pools.find((x) => x.pool === id);
@@ -562,7 +566,7 @@ async function walletsPage(main, id) {
 		b.pools.length ? h('div', { class: 'cards' }, b.pools.map((p) => walletCard(b, p, accounts[p.pool], floor)))
 			: h('div', { class: 'card empty' }, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
 }
-const poolMark = (pool) => pool === 'PISPI' ? h('img', { class: 'flag', src: '/providers/pispi.png', alt: '', width: 20, height: 20 }) : flag(pool);
+const poolMark = (pool) => isPispi(pool) ? h('img', { class: 'flag', src: '/providers/pispi.png', alt: '', width: 20, height: 20 }) : flag(pool.split(':')[0]);
 const adjustButton = (pools, pool) => h('button', { class: 'btn', 'data-key': 'adjust', onclick: () => adjustModal(pools, pool) }, 'Book an adjustment…');
 const rebuildButton = () => h('button', { class: 'btn', 'data-key': 'rebuild', onclick: (e) => act(e, async () => { const r = await api('POST', '/admin/ledger/backfill'); toast(r.added ? `${plural(r.added, 'posting')} added` : 'Already up to date'); await reloadPage(); }, { busy: 'Rebuilding…' }) }, 'Rebuild from payments');
 /** Whether the books reached Formance: a banner when a person must act or wait, a quiet line when all is well. */
@@ -584,7 +588,7 @@ function walletVerdict(b, p, a) {
 	const badge_ = p.difference == null ? h('span', { class: 'badge s-idle' }, 'not checked') : unexplained ? h('span', { class: 'badge s-failed' }, `${signed(p.difference)} unexplained`) : h('span', { class: 'badge s-completed' }, 'balanced');
 	// one line, worst first
 	const note = low ? h('span', { class: 'bad-text' }, a.reasons?.[0] || 'Below the floor') : formanceOff ? h('span', { class: 'bad-text' }, `Formance has ${fmtAmount(p.formance)}`)
-		: a ? (a.coverDays == null ? 'No recent payouts' : `${a.coverDays} days of payouts covered`) : p.pool === 'PISPI' ? 'PI-SPI reports no balance' : 'No balance reported';
+		: a ? (a.coverDays == null ? 'No recent payouts' : `${a.coverDays} days of payouts covered`) : isPispi(p.pool) ? 'PI-SPI reports no balance' : 'No balance reported';
 	return { badge: badge_, note, warn: unexplained || formanceOff || low };
 }
 /**
@@ -595,7 +599,7 @@ function walletCard(b, p, a, floor) {
 	const v = walletVerdict(b, p, a);
 	const stat = (label, value) => h('div', {}, h('dt', {}, label), h('dd', { class: 'num' }, value));
 	return h('a', { class: `xcard${v.warn ? ' warn' : ''}`, href: `#/wallets/${encodeURIComponent(p.pool)}`, 'data-key': `wallet:${p.pool}` },
-		h('div', { class: 'xcard-head' }, poolMark(p.pool), h('h2', { class: 'm0 ellipsis' }, POOL_NAME[p.pool] || p.pool), h('span', { class: 'grow' }), h('span', { class: 'muted small mono' }, p.pool)),
+		h('div', { class: 'xcard-head' }, poolMark(p.pool), h('h2', { class: 'm0 ellipsis' }, poolCountry(p.pool)), h('span', { class: 'grow' }), h('span', { class: 'muted small mono' }, p.pool)),
 		h('div', { class: 'xcard-big num' }, p.wallet == null ? h('span', { class: 'muted' }, '–') : fmtAmount(p.wallet)),
 		h('div', { class: 'xcard-line' }, v.badge),
 		h('div', { class: 'xcard-line ellipsis small muted' }, v.note),
@@ -609,11 +613,11 @@ function walletDetail(b, p, a, floor) {
 		h('td', {}, tenantChip(t.tenant)), h('td', { class: `num${t.available < 0 ? ' bad-text' : ''}` }, fmtAmount(t.available)), h('td', { class: 'num' }, t.held ? fmtAmount(t.held) : '–'),
 		h('td', { class: 'num' }, p.total ? `${Math.round(((t.available + (t.held || 0)) / p.total) * 100)} %` : '–')));
 	return [
-		head(h('span', { class: 'chan' }, poolMark(p.pool), POOL_NAME[p.pool] || p.pool), p.pool === 'PISPI' ? 'The PI-SPI bank account: money collected by bank transfer and QR code.' : `The pawaPay wallet in ${POOL_NAME[p.pool] || p.pool}: mobile money collected and paid out there.`,
+		head(h('span', { class: 'chan' }, poolMark(p.pool), poolName(p.pool)), isPispi(p.pool) ? `The PI-SPI bank account in ${poolCountry(p.pool)}: money collected by bank transfer and QR code.` : `The pawaPay wallet in ${poolCountry(p.pool)}: mobile money collected and paid out there.`,
 			adjustButton(b.pools.map((x) => x.pool), p.pool), refreshButton()),
 		syncStatus(b),
 		h('div', { class: 'tiles mt14' },
-			tile(p.pool === 'PISPI' ? 'In the bank account' : 'In the wallet', p.wallet == null ? '–' : fmtAmount(p.wallet), v.note, a && a.status !== 'ok' ? 'bad' : null),
+			tile(isPispi(p.pool) ? 'In the bank account' : 'In the wallet', p.wallet == null ? '–' : fmtAmount(p.wallet), v.note, a && a.status !== 'ok' ? 'bad' : null),
 			tile('Books total', fmtAmount(p.total), `${fmtAmount(owned)} owned by products`),
 			tile('Unexplained', p.difference == null ? '–' : p.difference === 0 ? 'none' : signed(p.difference), p.difference ? 'book it as an adjustment once you know what it is' : 'the books account for every franc', p.difference ? 'bad' : null),
 			b.enabled ? tile('Formance', p.formance == null ? '–' : fmtAmount(p.formance), p.formance == null ? 'not read' : p.formance === p.total ? 'matches the books' : 'differs from the books', p.formance != null && p.formance !== p.total ? 'bad' : null)
@@ -628,7 +632,7 @@ function walletDetail(b, p, a, floor) {
 /** The registry wallets behind a pool (one pawaPay wallet per country; every PI-SPI account for PISPI) and which products may use each. */
 function walletAccess(pool, reg) {
 	if (!reg) return h('p', { class: 'muted small mt22' }, 'The wallets registry could not be read (migration 0005 applied?): who may use this wallet is not shown.');
-	const ws = reg.data.filter((w) => pool === 'PISPI' ? w.rail === 'PISPI' : w.rail === 'PAWAPAY' && w.country === pool);
+	const ws = reg.data.filter((w) => w.id === pool);
 	return ws.map((w) => {
 		const allowed = new Map(w.tenants.map((t) => [t.id, t]));
 		const ids = [...new Set([...TENANTS.keys(), ...allowed.keys()])].sort();
@@ -660,8 +664,8 @@ function accessBox(tenant, wallet, dir, t, after = reloadPage) {
 	return box;
 }
 function adjustModal(pools, pool) {
-	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
-	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p, selected: p === pool || null }, `${p}${POOL_NAME[p] ? ` · ${POOL_NAME[p]}` : ''}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
+	const all = [...new Set([...pools, 'CIV:PAWAPAY', 'SEN:PAWAPAY', 'BFA:PAWAPAY', 'CIV:PISPI'])];
+	const f = { pool: h('select', {}, all.map((p) => h('option', { value: p, selected: p === pool || null }, `${p} · ${poolName(p)}`))), note: h('input', { maxlength: 200, required: true, placeholder: 'e.g. opening float, pawaPay fees for March' }) };
 	const amount = moneyInput({ signed: true, hint: 'Whole FCFA, e.g. 500 000 or -1 200. Positive for money put in, negative for money taken out.' });
 	f.amount = amount.input; f.amount.required = true;
 	const rules = {
@@ -676,7 +680,7 @@ function adjustModal(pools, pool) {
 	f.amount.addEventListener('input', say); f.pool.addEventListener('change', say); say();
 	const err = h('div');
 	const m = overlay([h('h2', {}, 'Book an adjustment'), h('p', { class: 'muted' }, 'Money in a wallet that belongs to no product: positive for float the studio put in, negative for fees or losses taken out. It cannot be edited later; book the opposite to undo it.'),
-		field('Pool', f.pool, 'The country wallet, or the PI-SPI account, the money sits in.'), field('Amount', f.amount, amount.hint), field('What is it', f.note, 'Required. Kept with the posting.'), summary, err,
+		field('Pool', f.pool, 'The wallet the money sits in: a pawaPay country wallet or a PI-SPI account.'), field('Amount', f.amount, amount.hint), field('What is it', f.note, 'Required. Kept with the posting.'), summary, err,
 		h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), h('button', { class: 'btn primary', onclick: (e) => {
 			if (!check([[f.amount, rules.amount()], [f.note, rules.note()]])) return;
 			return act(e, async () => {
@@ -977,7 +981,7 @@ async function tenantDrawer(id) {
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
 			wallets ? [h('h2', {}, 'Wallets'), h('p', { class: 'muted small' }, 'The accounts this product may collect into or pay out from. Anything else is refused before it starts.'),
 				table([{ label: 'Wallet' }, { label: 'Collect' }, { label: 'Pay out' }], wallets.data.map((w) => h('tr', {},
-					h('td', {}, h('span', { class: 'chan' }, poolMark(w.rail === 'PISPI' ? 'PISPI' : w.country), w.id), w.status !== 'active' ? [' ', badge(w.status)] : null),
+					h('td', {}, h('span', { class: 'chan' }, poolMark(w.id), w.id), w.status !== 'active' ? [' ', badge(w.status)] : null),
 					h('td', {}, accessBox(id, w.id, 'collect', w, null)), h('td', {}, accessBox(id, w.id, 'payout', w, null)))), 'No wallets registered.')] : null,
 			h('div', { class: 'bar mt22' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', 'data-key': 'new-key', onclick: () => newKey(id, render) }, 'New key')),
 			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: h('span', { class: 'sr-only' }, 'Actions') }],

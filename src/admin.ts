@@ -82,10 +82,11 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 	if (path === '/admin/ledger/retry' && m === 'POST') return json(await retryStuck(env));
 	if (path === '/admin/ledger/adjustments' && m === 'POST') {
 		const b = await body(request);
-		if (typeof b.pool !== 'string' || !/^(CIV|SEN|BFA|PISPI)$/.test(b.pool)) throw new ApiError(400, 'invalid_pool', 'pool is CIV, SEN, BFA or PISPI');
+		const pool = typeof b.pool === 'string' ? b.pool.toUpperCase() : '';
+		if (!pool || !(await env.DB.prepare(`SELECT 1 AS x FROM wallets WHERE id = ?`).bind(pool).first())) throw new ApiError(400, 'invalid_pool', 'pool is a wallet id, e.g. CIV:PAWAPAY or CIV:PISPI');
 		if (typeof b.amount !== 'number' || !Number.isInteger(b.amount) || b.amount === 0 || Math.abs(b.amount) > 1_000_000_000) throw new ApiError(400, 'invalid_amount', 'amount is a whole number of XOF, positive for float put in, negative for fees or losses taken out');
 		if (typeof b.note !== 'string' || !b.note.trim()) throw new ApiError(400, 'invalid_note', 'note is required: say what the money is');
-		return json(await adjustPool(env, b.pool, b.amount, b.note.trim(), admin), 201);
+		return json(await adjustPool(env, pool, b.amount, b.note.trim(), admin), 201);
 	}
 	if (path === '/admin/payments/stats' && m === 'GET') {
 		// the payments page's headline numbers, for the same tenant and direction filters (not status: these ARE the breakdown by status).
