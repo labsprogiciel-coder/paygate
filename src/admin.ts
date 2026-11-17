@@ -10,6 +10,7 @@ import { attention, eventFeed, SOURCES, type Source } from './events.ts';
 import { adjustPool, backfillLedger, booksReport, retryStuck } from './ledger.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
+import { createWallet, listWallets, pispiCountry, setTenantWallet, tenantWallets, updateWallet } from './wallets.ts';
 import { pispiAlias, pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 
 /**
@@ -36,7 +37,7 @@ const body = async (request: Request): Promise<Record<string, unknown>> => {
 
 /** What the operator sees of a payment: the tenant's view plus the detail a tenant never gets. */
 const adminView = (env: Env, r: PaymentRow) => ({ ...view(env, r), tenant: r.tenant_id, provider: r.provider, country: r.country, providerId: r.provider_id, providerRef: r.provider_ref, failureDetail: r.failure_detail, attempts: r.attempts, version: r.version,
-	returnStatus: r.return_status, returnRef: r.return_ref, returnReason: r.return_reason, returnDetail: r.return_detail, returnRequestedAt: r.return_requested_at, returnedAt: r.returned_at });
+	returnStatus: r.return_status, returnRef: r.return_ref, returnReason: r.return_reason, returnDetail: r.return_detail, returnRequestedAt: r.return_requested_at, returnedAt: r.returned_at, walletId: r.wallet_id });
 
 export async function adminApi(env: Env, request: Request, path: string, providers: Providers): Promise<Response | null> {
 	const admin = await requireAdmin(env, request);
@@ -64,6 +65,18 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		if (m === 'GET') return json({ secret: await webhookSecret(env, t), version: t.webhook_version });
 		if (m === 'POST') return json(await rotateWebhookSecret(env, t.id)); // rotate
 	}
+	if ((g = /^\/admin\/tenants\/([a-z0-9-]+)\/wallets$/.exec(path)) && m === 'GET') {
+		if (!(await getTenant(env, g[1]!))) throw new ApiError(404, 'not_found', 'No such tenant');
+		return json({ data: await tenantWallets(env, g[1]!) });
+	}
+	if ((g = /^\/admin\/tenants\/([a-z0-9-]+)\/wallets\/([A-Za-z]{3})(?::|%3A)([A-Za-z]+)$/i.exec(path)) && m === 'PUT') return json({ data: await setTenantWallet(env, g[1]!, `${g[2]}:${g[3]}`.toUpperCase(), await body(request)) });
+	// the wallets registry (src/wallets.ts): with, for each, the products that may use it
+	if (path === '/admin/wallets' && m === 'GET') {
+		const [wallets, { results }] = await Promise.all([listWallets(env), env.DB.prepare(`SELECT tenant_id, wallet_id, collect, payout FROM tenant_wallets ORDER BY tenant_id`).all<{ tenant_id: string; wallet_id: string; collect: number; payout: number }>()]);
+		return json({ data: wallets.map((w) => ({ ...w, tenants: results.filter((t) => t.wallet_id === w.id).map((t) => ({ id: t.tenant_id, collect: !!t.collect, payout: !!t.payout })) })) });
+	}
+	if (path === '/admin/wallets' && m === 'POST') return json(await createWallet(env, await body(request)), 201);
+	if ((g = /^\/admin\/wallets\/([A-Za-z]{3})(?::|%3A)([A-Za-z]+)$/i.exec(path)) && m === 'PATCH') return json(await updateWallet(env, `${g[1]}:${g[2]}`.toUpperCase(), await body(request)));
 	if (path === '/admin/ledger' && m === 'GET') return json(await booksReport(env, providers));
 	if (path === '/admin/ledger/backfill' && m === 'POST') return json(await backfillLedger(env));
 	if (path === '/admin/ledger/retry' && m === 'POST') return json(await retryStuck(env));
@@ -149,7 +162,7 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 			loadFloat(env, providers).then((f) => ({ f, error: null }), (e: unknown) => ({ f: null, error: e instanceof Error ? e.message : String(e) })),
 		]);
 		const sandbox = providers.mode === 'sandbox';
-		const iso3 = ({ BF: 'BFA', CI: 'CIV', SN: 'SEN' } as Record<string, string>)[env.PISPI_COUNTRY || 'BF'] ?? (env.PISPI_COUNTRY || 'BF');
+		const iso3 = pispiCountry(env);
 		const alias = pispiAlias(env), pispiOn = pispiEnabled(env);
 		const rail = (open: boolean) => ({ status: open ? 'OPERATIONAL' : 'CLOSED', min: null, max: null });
 		const list = [

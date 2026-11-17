@@ -66,7 +66,7 @@ test('a QR collection returns the QR fields, is settled by PI-SPI\'s own record,
   const a = await g.call('POST', '/v1/collections', { reference: 'q-1', amount: 5000, rail: 'pispi_qr' });
   assert.equal(a.status, 201);
   assert.equal(a.body.status, 'processing');
-  assert.deepEqual(a.body.qr, { alias: ALIAS, countryCode: 'BF', qrType: 'DYNAMIC', referenceLabel: a.body.id.toUpperCase(), amount: 5000 });
+  assert.deepEqual(a.body.qr, { alias: ALIAS, countryCode: 'CI', qrType: 'DYNAMIC', referenceLabel: a.body.id.toUpperCase(), amount: 5000 });
   assert.ok(a.body.qr.referenceLabel.length <= 25);
 
   assert.equal((await g.call('GET', `/v1/collections/${a.body.id}`)).body.status, 'processing', 'nothing arrived yet');

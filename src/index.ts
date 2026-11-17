@@ -9,7 +9,9 @@ import type { Kind } from './ids.ts';
 import { createPayment, getRowFor, history, listPayments, refresh, view } from './payments.ts';
 import { pispiEnabled, pispiPollEnabled, pispiRtpEnabled } from './providers/pispi.ts';
 import { getProviders } from './providers/index.ts';
-import type { Providers } from './providers/types.ts';
+import type { Providers, Rail } from './providers/types.ts';
+import { parsePhone } from './providers/phone.ts';
+import { tenantWallets, walletFor, walletRefusal } from './wallets.ts';
 import { rateLimit } from './ratelimit.ts';
 import { reconcile } from './reconcile.ts';
 import { reconcileReturns } from './returns.ts';
@@ -64,7 +66,7 @@ async function tenantApi(env: Env, request: Request, ctx: ExecutionContext, path
 		if (g[3]) return json({ data: await history(env, row) });
 		return json(view(env, await refresh(env, row, providers)));
 	}
-	if (path === '/v1/methods' && request.method === 'GET') return json(await methods(env, url, providers));
+	if (path === '/v1/methods' && request.method === 'GET') return json(await methods(env, tenant, url, providers));
 	if (path === '/v1/float' && request.method === 'GET') return json(await loadFloat(env, providers));
 	if (path === '/v1/webhooks/test' && request.method === 'POST') {
 		if (!tenant.webhook_url) throw new ApiError(422, 'no_webhook', 'This account has no webhook URL');
@@ -72,16 +74,27 @@ async function tenantApi(env: Env, request: Request, ctx: ExecutionContext, path
 		wake();
 		return json({ queued: id });
 	}
-	if (path === '/v1/me' && request.method === 'GET') return json({ id: tenant.id, name: tenant.name, webhookUrl: tenant.webhook_url, maxAmount: tenant.max_amount ?? Number(env.DEFAULT_MAX_AMOUNT), mode: providers.mode, live: on(env.LIVE) });
+	if (path === '/v1/me' && request.method === 'GET') return json({ id: tenant.id, name: tenant.name, webhookUrl: tenant.webhook_url, maxAmount: tenant.max_amount ?? Number(env.DEFAULT_MAX_AMOUNT), mode: providers.mode, live: on(env.LIVE), wallets: await tenantWallets(env, tenant.id) });
 	throw new ApiError(404, 'not_found', 'No such endpoint');
 }
 
 /** Whether a way of paying is available, and its limits: ask BEFORE showing a customer an option they cannot use. */
-async function methods(env: Env, url: URL, providers: Providers) {
+async function methods(env: Env, tenant: Tenant, url: URL, providers: Providers) {
+	const r = await railMethods(env, url, providers);
+	if (!r.available) return r;
+	// the provider can, but may this product? (the wallets registry, src/wallets.ts)
+	const country = r.rail === 'mobile_money' ? parsePhone((url.searchParams.get('phone') ?? '').replace(/[\s\-()]/g, ''))?.country ?? null : null;
+	if (r.rail === 'mobile_money' && !country) return r;
+	const why = await walletRefusal(env, tenant.id, walletFor(env, r.rail, country), r.direction === 'disburse' ? 'disbursement' : 'collection');
+	return why ? { rail: r.rail, direction: r.direction, available: false, reason: why } : r;
+}
+
+async function railMethods(env: Env, url: URL, providers: Providers): Promise<{ rail: Rail; direction: string; available: boolean; [k: string]: unknown }> {
 	const rail = url.searchParams.get('rail') ?? 'mobile_money';
 	if (rail === 'pispi_qr') return { rail, available: pispiEnabled(env), direction: 'collect', manualConfirmation: !pispiPollEnabled(env) };
 	if (rail === 'pispi_rtp') return { rail, available: pispiRtpEnabled(env), direction: 'collect' };
 	if (rail !== 'mobile_money') throw new ApiError(400, 'invalid_rail', 'rail is mobile_money, pispi_qr or pispi_rtp');
+	// (from here the rail is mobile_money)
 	const operator = url.searchParams.get('operator') ?? '', phone = (url.searchParams.get('phone') ?? '').replace(/[\s\-()]/g, '');
 	const direction = url.searchParams.get('direction') === 'disburse' ? 'disburse' : 'collect';
 	if (direction === 'disburse') {

@@ -8,6 +8,7 @@ import { decide, isOpen, NOT_FOUND_DETAIL, NOT_FOUND_GRACE_MS, PISPI_LATE_MS, RE
 import type { Tenant } from './tenants.ts';
 import { syncLedger } from './ledger.ts';
 import { canonical, log, newId, on, safeUrl, sha256Hex } from './util.ts';
+import { requireWallet, walletFor } from './wallets.ts';
 
 export interface PaymentRow {
 	id: string; tenant_id: string; kind: Kind; reference: string; rail: Rail; operator: string | null; country: string | null; counterparty: string;
@@ -17,6 +18,8 @@ export interface PaymentRow {
 	created_at: number; updated_at: number; settled_at: number | null;
 	return_status: ReturnStatus | null; return_ref: string | null; return_reason: string | null; return_detail: string | null;
 	return_requested_at: number | null; return_checked_at: number | null; returned_at: number | null;
+	/** the account the money goes through (src/wallets.ts); null only for payments made before the registry that it could not place */
+	wallet_id: string | null;
 }
 /** A return of funds to the payer (PI-SPI): see src/returns.ts. */
 export type ReturnStatus = 'requested' | 'initiated' | 'returned' | 'rejected';
@@ -204,6 +207,10 @@ export async function createPayment(env: Env, tenant: Tenant, kind: Kind, body: 
 		return { payment: view(env, await refresh(env, existing, providers, { now })), created: false };
 	}
 
+	// the product must be allowed to use this wallet in this direction (src/wallets.ts)
+	const walletId = walletFor(env, n.rail, n.country);
+	await requireWallet(env, tenant.id, walletId, kind);
+
 	// the provider must be able to do this, and the amount must fit its limits: refused now, before anything is recorded or any money moves
 	let methodJson: string | null = null, authType: string | null = null, provider = providers.collect.name;
 	if (n.rail === 'mobile_money' && kind === 'collection') {
@@ -231,9 +238,9 @@ export async function createPayment(env: Env, tenant: Tenant, kind: Kind, body: 
 
 	const id = newId('pg');
 	const providerId = n.rail === 'mobile_money' ? await providerIdFor(tenant, kind, n.reference) : null;
-	const insert = await env.DB.prepare(`INSERT OR IGNORE INTO payments (id, tenant_id, kind, reference, rail, operator, country, counterparty, amount, status, provider, provider_id, auth_type, method, request_hash, metadata, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		.bind(id, tenant.id, kind, n.reference, n.rail, n.operator, n.country, n.counterparty, n.amount, provider, providerId, authType, methodJson, hash, n.metadata, kind === 'collection' ? now + n.expiresInSeconds * 1000 : null, now, now).run();
+	const insert = await env.DB.prepare(`INSERT OR IGNORE INTO payments (id, tenant_id, kind, reference, rail, operator, country, counterparty, amount, status, provider, provider_id, auth_type, method, request_hash, metadata, expires_at, created_at, updated_at, wallet_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		.bind(id, tenant.id, kind, n.reference, n.rail, n.operator, n.country, n.counterparty, n.amount, provider, providerId, authType, methodJson, hash, n.metadata, kind === 'collection' ? now + n.expiresInSeconds * 1000 : null, now, now, walletId).run();
 	if (!insert.meta.changes) { // a concurrent call with the same reference won: it starts the payment, we return it
 		const won = (await getRowFor(env, tenant.id, kind, n.reference))!;
 		if (won.request_hash !== hash) throw new ApiError(409, 'idempotency_conflict', 'A payment with this reference already exists with different details.');
