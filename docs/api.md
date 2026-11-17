@@ -12,7 +12,7 @@ Every `/v1` call carries `Authorization: Bearer pgk_<id>_<secret>`. The operator
 { "error": { "code": "amount_out_of_bounds", "message": "This amount is outside the provider limits", "min": 100, "max": 1000000 } }
 ```
 
-`code` is stable and meant for programs. Some codes carry extra fields (`min`/`max`, `codeInstructions`).
+`code` is stable and meant for programs. Some codes carry extra fields (`min`/`max`, `codeInstructions`, `wallet`).
 
 | Status | Codes |
 |---|---|
@@ -21,7 +21,7 @@ Every `/v1` call carries `Authorization: Bearer pgk_<id>_<secret>`. The operator
 | 404 | `not_found` |
 | 409 | `idempotency_conflict` |
 | 413 | `payload_too_large` |
-| 422 | `provider_unavailable` `amount_out_of_bounds` `amount_too_large` `pre_auth_code_required` `redirect_urls_required` `no_webhook` |
+| 422 | `wallet_not_enabled` `provider_unavailable` `amount_out_of_bounds` `amount_too_large` `pre_auth_code_required` `redirect_urls_required` `no_webhook` |
 | 429 | `rtp_limit` `rate_limited` |
 | 5xx | `internal`, or the request failed before anything was recorded |
 
@@ -110,7 +110,11 @@ Set a URL with the operator. Events:
 
 - `GET /v1/methods?rail=mobile_money&operator=orange&phone=+225…&direction=collect|disburse&amount=` — whether that way of paying works for that number, with limits and instructions. Ask before you show a customer an option. `?rail=pispi_qr` / `pispi_rtp` say if PI-SPI is on (and whether a person must confirm QR payments).
 - `GET /v1/float` — the shared payout wallet per country: balance, the floor, what is committed, last-24 h flows, cover in days. It is the whole gateway's, not yours alone. Payouts you hold back on your side (waiting for your own approval) are not in it: add them.
-- `GET /v1/me` — your account, limits, and whether the gateway is live.
+- `GET /v1/me` — your account, limits, whether the gateway is live, and `wallets`: every account money can go through (`CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY`, `CIV:PISPI`, …), with whether you may `collect` and `payout` through each.
+
+## Wallets
+
+Every payment goes through one wallet: a mobile money payment through the pawaPay wallet of the phone's country (`SEN:PAWAPAY` for a +221 number), a PI-SPI payment through the PI-SPI account (`CIV:PISPI`). Your account may use only the wallets the operator enabled for it, per direction. Anything else is refused with `422 wallet_not_enabled` (with `wallet`) before anything is recorded or sent; `GET /v1/methods` answers `available: false` with the reason first. A repeat of a payment you already made (same reference) still answers, whatever has changed since.
 
 ## PI-SPI notes
 
@@ -131,7 +135,7 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `POST /admin/tenants/{id}/keys` | `{ label? }` → `{ id, key }`, shown once |
 | `DELETE /admin/tenants/{id}/keys/{keyId}` | revoke |
 | `GET /admin/tenants/{id}/webhook-secret` | the secret your product verifies with; `POST` rotates it |
-| `GET /admin/payments?status=&tenant=&kind=&limit=&before=` | with the detail tenants never see; newest first, `limit` 1–100 (default 50). Returns `{ data, total, next }`: pass `next` as `before` for the next page |
+| `GET /admin/payments?status=&tenant=&kind=&limit=&before=` | with the detail tenants never see (`walletId` among it); newest first, `limit` 1–100 (default 50). Returns `{ data, total, next }`: pass `next` as `before` for the next page |
 | `GET /admin/ledger` | the books: per pool (`CIV`, `SEN`, `BFA`, `PISPI`) each tenant's `available` and `held`, `unallocated`, `total`, the provider `wallet`, `difference` (wallet − total), and `formance` (its total, when set up); plus the `outbox` (`pending`, `stuck`) |
 | `POST /admin/ledger/backfill` | books every payment's missing postings (idempotent) → `{ payments, added }` |
 | `POST /admin/ledger/retry` | gives postings stuck on their way to Formance (10 failed tries) their tries back → `{ reset }` |
@@ -140,6 +144,11 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `GET /admin/payments/{id}` | with its full history |
 | `POST /admin/payments/{id}/resolve` | `{ outcome: "completed" \| "failed", note }` for an `unknown` payout or a manually confirmed PI-SPI payment |
 | `POST /admin/payments/{id}/return` | `{ reason }`: sends a received PI-SPI payment back to its payer, in full (a completed one, or one that arrived for the wrong amount). `GET /admin/payments/{id}` says whether it can (`returnable`) and how it stands (`returnStatus`: `requested`, `initiated`, `returned`, `rejected`). Needs `PISPI_RETURNS`. |
+| `GET /admin/wallets` | the wallets registry: each wallet (`id` `<country>:<rail>`, `rail`, `country`, `label`, `status` `active`/`off`, `secrets_prefix`) with the `tenants` that may use it and how (`collect`, `payout`) |
+| `POST /admin/wallets` | `{ id, label?, secretsPrefix? }`: registers a wallet, e.g. `SEN:PISPI` for a second PI-SPI account. It starts enabled for no product; products created later get it |
+| `PATCH /admin/wallets/{id}` | `{ status?, label? }`. `off`: no product can start a payment through it; payments already on their way still settle |
+| `GET /admin/tenants/{id}/wallets` | every wallet with whether this product may `collect` and `payout` through it |
+| `PUT /admin/tenants/{id}/wallets/{walletId}` | `{ collect, payout }`, both required. A new product starts with every active wallet, both ways |
 | `GET /admin/webhooks/dead`, `POST /admin/webhooks/{id}/retry` | undeliverable events |
 | `GET /admin/float`, `GET /admin/provider-events` | wallets; the last 100 provider callbacks as received |
 | `GET /admin/events?source=&problems=1&tenant=&payment=&before=&limit=` | one feed, newest first: payment status changes (`payment`), provider callbacks (`callback`), webhooks to tenants (`webhook`). `source` is a comma-separated list; `problems=1` keeps what needs a person (failed, unknown, mismatch, late payments; rejected callbacks; dead webhooks); pass the response's `next` as `before` for the next page |

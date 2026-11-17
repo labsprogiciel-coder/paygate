@@ -550,12 +550,13 @@ const POOL_NAME = { CIV: "Côte d'Ivoire", SEN: 'Senegal', BFA: 'Burkina Faso', 
 const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
 const WALLETS_SUB = 'What each wallet holds and whether the books account for all of it. Open a wallet to see which product owns what.';
 async function walletsPage(main, id) {
-	const [b, prov] = await Promise.all([api('GET', '/admin/ledger'), api('GET', '/admin/providers').catch((e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; })]);
+	const soft = (e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; };
+	const [b, prov, reg] = await Promise.all([api('GET', '/admin/ledger'), api('GET', '/admin/providers').catch(soft), id ? api('GET', '/admin/wallets').catch(soft) : null, id ? loadTenants() : null]);
 	const accounts = Object.fromEntries((prov?.data || []).flatMap((p) => p.accounts.filter((a) => a.kind !== 'alias').map((a) => [a.country, a])));
 	const floor = prov?.floor ?? null;
 	if (id) {
 		const p = b.pools.find((x) => x.pool === id);
-		return put(main, back('#/wallets', 'Wallets'), p ? walletDetail(b, p, accounts[p.pool], floor) : h('div', { class: 'alert bad' }, `No wallet ${id}.`));
+		return put(main, back('#/wallets', 'Wallets'), p ? [walletDetail(b, p, accounts[p.pool], floor), walletAccess(p.pool, reg)] : h('div', { class: 'alert bad' }, `No wallet ${id}.`));
 	}
 	put(main, head('Wallets', WALLETS_SUB, adjustButton(b.pools.map((p) => p.pool)), rebuildButton(), refreshButton()), syncStatus(b),
 		b.pools.length ? h('div', { class: 'cards' }, b.pools.map((p) => walletCard(b, p, accounts[p.pool], floor)))
@@ -623,6 +624,40 @@ function walletDetail(b, p, a, floor) {
 			h('tr', { class: 'sum' }, h('td', {}, h('span', { class: 'muted' }, 'Studio float (owned by no product)')), h('td', { class: 'num' }, fmtAmount(p.unallocated)), h('td', {}), h('td', { class: 'num' }, p.total ? `${Math.round((p.unallocated / p.total) * 100)} %` : '–')),
 		], 'Nothing booked in this wallet yet.'),
 		a ? h('p', { class: 'muted small mt14' }, [`Floor ${floor != null ? fmtAmount(floor) : '–'}`, a.committed ? `${fmtAmount(a.committed)} committed to ${plural(a.committedCount, 'payout')} in flight` : null].filter(Boolean).join(' · ')) : null];
+}
+/** The registry wallets behind a pool (one pawaPay wallet per country; every PI-SPI account for PISPI) and which products may use each. */
+function walletAccess(pool, reg) {
+	if (!reg) return h('p', { class: 'muted small mt22' }, 'The wallets registry could not be read (migration 0005 applied?): who may use this wallet is not shown.');
+	const ws = reg.data.filter((w) => pool === 'PISPI' ? w.rail === 'PISPI' : w.rail === 'PAWAPAY' && w.country === pool);
+	return ws.map((w) => {
+		const allowed = new Map(w.tenants.map((t) => [t.id, t]));
+		const ids = [...new Set([...TENANTS.keys(), ...allowed.keys()])].sort();
+		const on = w.status === 'active';
+		return [
+			h('div', { class: 'bar mt22' }, h('h2', { class: 'grow m0' }, `Who may use ${w.id}`), badge(w.status),
+				h('button', { class: `btn sm${on ? ' danger' : ''}`, 'data-key': `wallet-status:${w.id}`, onclick: (e) => {
+					const go = async () => { await api('PATCH', `/admin/wallets/${encodeURIComponent(w.id)}`, { status: on ? 'off' : 'active' }); toast(on ? `${w.id} switched off` : `${w.id} switched on`); await reloadPage(); };
+					return on ? confirmModal(`Switch ${w.id} off?`, 'No product can start a payment through it until you switch it on again. Payments already on their way still settle.', 'Switch off', go) : act(e, go, { busy: 'Switching on…' });
+				} }, on ? 'Switch off…' : 'Switch on')),
+			h('p', { class: 'muted small' }, [w.label, w.secrets_prefix ? `secrets ${w.secrets_prefix}_*` : null, 'A product only collects or pays out through the wallets ticked for it.'].filter(Boolean).join(' · ')),
+			table([{ label: 'Product' }, { label: 'Collect' }, { label: 'Pay out' }], ids.map((id) => {
+				const t = allowed.get(id) ?? { collect: false, payout: false };
+				return h('tr', {}, h('td', {}, tenantChip(id)), h('td', {}, accessBox(id, w.id, 'collect', t)), h('td', {}, accessBox(id, w.id, 'payout', t)));
+			}), 'No products yet.')];
+	});
+}
+/** One tick of the access table: saved at once, put back if the gateway refuses. */
+function accessBox(tenant, wallet, dir, t, after = reloadPage) {
+	const box = h('input', { type: 'checkbox', checked: t[dir] ? true : null, 'data-key': `access:${tenant}:${wallet}:${dir}`, 'aria-label': `${tenant} may ${dir === 'collect' ? 'collect' : 'pay out'} through ${wallet}` });
+	box.addEventListener('change', async () => {
+		const next = { collect: t.collect, payout: t.payout, [dir]: box.checked };
+		box.disabled = true;
+		try { await api('PUT', `/admin/tenants/${encodeURIComponent(tenant)}/wallets/${encodeURIComponent(wallet)}`, next); Object.assign(t, next);
+			toast(`${tenant} ${box.checked ? 'may now' : 'can no longer'} ${dir === 'collect' ? 'collect' : 'pay out'} through ${wallet}`); await after?.(); }
+		catch (x) { box.checked = !box.checked; toast(x.message, { error: true }); }
+		finally { box.disabled = false; }
+	});
+	return box;
 }
 function adjustModal(pools, pool) {
 	const all = [...new Set([...pools, 'CIV', 'SEN', 'BFA', 'PISPI'])];
@@ -927,7 +962,7 @@ async function connectModal(id) {
 async function tenantDrawer(id) {
 	const d = overlay(skDrawer(), { label: 'Tenant' });
 	const render = async () => {
-		const [t, keys, books] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null)]);
+		const [t, keys, books, wallets] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null), api('GET', `/admin/tenants/${id}/wallets`).catch(() => null)]);
 		const owns = (books?.pools || []).flatMap((p) => p.tenants.filter((x) => x.tenant === id).map((x) => ({ pool: p.pool, ...x })));
 		d.fill(
 			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
@@ -940,7 +975,11 @@ async function tenantDrawer(id) {
 					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); reloadPage(); };
 					return t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : act(e, go, { busy: 'Reactivating…' });
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
-			h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', 'data-key': 'new-key', onclick: () => newKey(id, render) }, 'New key')),
+			wallets ? [h('h2', {}, 'Wallets'), h('p', { class: 'muted small' }, 'The accounts this product may collect into or pay out from. Anything else is refused before it starts.'),
+				table([{ label: 'Wallet' }, { label: 'Collect' }, { label: 'Pay out' }], wallets.data.map((w) => h('tr', {},
+					h('td', {}, h('span', { class: 'chan' }, poolMark(w.rail === 'PISPI' ? 'PISPI' : w.country), w.id), w.status !== 'active' ? [' ', badge(w.status)] : null),
+					h('td', {}, accessBox(id, w.id, 'collect', w, null)), h('td', {}, accessBox(id, w.id, 'payout', w, null)))), 'No wallets registered.')] : null,
+			h('div', { class: 'bar mt22' }, h('h2', { class: 'grow m0' }, 'API keys'), h('button', { class: 'btn sm primary', 'data-key': 'new-key', onclick: () => newKey(id, render) }, 'New key')),
 			table([{ label: 'Key' }, { label: 'Label' }, { label: 'Last used' }, { label: h('span', { class: 'sr-only' }, 'Actions') }],
 				keys.data.map((k) => h('tr', {}, h('td', { class: 'mono' }, `pgk_${k.id}_…`), h('td', {}, k.label || '–'), h('td', {}, k.revoked_at ? badge('dead') : ago(k.last_used_at)),
 					h('td', {}, k.revoked_at ? h('span', { class: 'muted' }, 'revoked') : h('button', { class: 'btn sm danger', onclick: () => confirmModal('Revoke key?', `pgk_${k.id}_… stops working immediately. Anything still using it will get 401.`, 'Revoke', async () => { await api('DELETE', `/admin/tenants/${id}/keys/${k.id}`); await render(); }) }, 'Revoke')))),

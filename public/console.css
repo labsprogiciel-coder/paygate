@@ -44,7 +44,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .s-completed, .s-ok, .s-active, .s-delivered { background: var(--ok-bg); color: var(--ok); }
 .s-processing, .s-pending, .s-low, .s-info { background: var(--info-bg); color: var(--info); }
 .s-unknown, .s-critical, .s-failed, .s-dead, .s-suspended { background: var(--bad-bg); color: var(--bad); }
-.s-expired, .s-idle { background: var(--idle-bg); color: var(--idle); }
+.s-expired, .s-idle, .s-off { background: var(--idle-bg); color: var(--idle); }
 .s-low { background: var(--warn-bg); color: var(--warn); }
 .late { background: var(--warn-bg); color: var(--warn); }
 .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }

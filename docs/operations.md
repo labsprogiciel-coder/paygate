@@ -63,6 +63,12 @@ curl $GW/admin/tenants/courtly/webhook-secret -H "$A"                          #
 
 Set `maxAmount` per product if it should be lower than `DEFAULT_MAX_AMOUNT`.
 
+A new product may use every active wallet, both ways (collect and pay out). Narrow it on the product's page in the console, or with `PUT /admin/tenants/{id}/wallets/{walletId}` (`{ "collect": true, "payout": false }`). A payment through a wallet the product may not use is refused before it starts.
+
+### Wallets
+
+The registry (migration 0005) names every account money sits in: `CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY` and `CIV:PISPI` to start (`PISPI_COUNTRY` decides which PI-SPI wallet a PI-SPI payment uses). Each payment records its wallet (`wallet_id`); the migration places the payments made before it and gives every product that existed then every wallet. Switch a wallet off (console: the wallet's page, or `PATCH /admin/wallets/{id}` `{ "status": "off" }`) to stop new payments through it at once, for every product. A second account on a rail (another country's PI-SPI account) is registered with `POST /admin/wallets`; sending payments through it needs its own credentials (PRO-39). The books still use pool names (`CIV`, `PISPI`); moving them onto wallet ids is PRO-37.
+
 ## Modes
 
 | `PROVIDER_MODE` | `LIVE` | |

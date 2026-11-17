@@ -1,4 +1,5 @@
 import { ApiError } from './errors.ts';
+import { enableAllWallets } from './wallets.ts';
 import { hmacHex, newId, safeEqual, sha256Hex, safeUrl, on } from './util.ts';
 
 export interface Tenant {
@@ -22,6 +23,7 @@ export async function createTenant(env: Env, input: TenantInput, now = Date.now(
 	if (await getTenant(env, input.id)) throw new ApiError(409, 'tenant_exists', 'A tenant with this id already exists');
 	await env.DB.prepare(`INSERT INTO tenants (id, name, webhook_url, max_amount, id_namespace, created_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(input.id, input.name.trim(), webhook, max, ns, now).run();
 	if (img) await setLogo(env, input.id, img);
+	await enableAllWallets(env, input.id, now);
 	return (await getTenant(env, input.id))!;
 }
 
