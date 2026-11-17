@@ -281,3 +281,6 @@ img.tmark { background: var(--panel); }
 /* the books */
 .book-tenants { display: grid; gap: 4px; }
 .book-tenants .chan { gap: 8px; }
+/* "As of" a day: the books at the end of that day (UTC) */
+.asof { display: inline-flex; align-items: center; gap: 8px; }
+.asof input[type=date] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: inherit; }

@@ -7,7 +7,7 @@ import { resolvePayment } from './reconcile.ts';
 import { requestReturn, returnable } from './returns.ts';
 import { loadFloat } from './float.ts';
 import { attention, eventFeed, SOURCES, type Source } from './events.ts';
-import { adjustPool, backfillLedger, booksReport, retryStuck } from './ledger.ts';
+import { adjustPool, backfillLedger, booksReport, retryStuck, tenantHoldings } from './ledger.ts';
 import type { Providers } from './providers/types.ts';
 import { safeEqual, on } from './util.ts';
 import { createWallet, listWallets, setTenantWallet, tenantWallets, updateWallet } from './wallets.ts';
@@ -34,6 +34,18 @@ const body = async (request: Request): Promise<Record<string, unknown>> => {
 	try { const v = await request.json(); if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>; } catch { /* below */ }
 	throw new ApiError(400, 'invalid_request', 'A JSON object is required');
 };
+
+/**
+ * `?at=` for the books as they stood at a date: a day (2026-10-31, meaning the end of that day UTC, for a month-end) or a moment (ISO 8601).
+ * Absent: now.
+ */
+function asOf(url: URL): number | null {
+	const v = url.searchParams.get('at');
+	if (!v) return null;
+	const t = /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T23:59:59.999Z`) : /^\d{4}-\d{2}-\d{2}T/.test(v) ? Date.parse(v) : NaN;
+	if (Number.isNaN(t)) throw new ApiError(400, 'invalid_date', 'at is a day (2026-10-31, the end of that day UTC) or an ISO 8601 moment');
+	return Math.min(t, Date.now());
+}
 
 /** What the operator sees of a payment: the tenant's view plus the detail a tenant never gets. */
 const adminView = (env: Env, r: PaymentRow) => ({ ...view(env, r), tenant: r.tenant_id, provider: r.provider, country: r.country, providerId: r.provider_id, providerRef: r.provider_ref, failureDetail: r.failure_detail, attempts: r.attempts, version: r.version,
@@ -77,7 +89,11 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 	}
 	if (path === '/admin/wallets' && m === 'POST') return json(await createWallet(env, await body(request)), 201);
 	if ((g = /^\/admin\/wallets\/([A-Za-z]{3})(?::|%3A)([A-Za-z]+)$/i.exec(path)) && m === 'PATCH') return json(await updateWallet(env, `${g[1]}:${g[2]}`.toUpperCase(), await body(request)));
-	if (path === '/admin/ledger' && m === 'GET') return json(await booksReport(env, providers));
+	if (path === '/admin/ledger' && m === 'GET') return json(await booksReport(env, providers, asOf(url)));
+	if ((g = /^\/admin\/tenants\/([a-z0-9-]+)\/holdings$/.exec(path)) && m === 'GET') {
+		if (!(await getTenant(env, g[1]!))) throw new ApiError(404, 'not_found', 'No such tenant');
+		return json(await tenantHoldings(env, g[1]!, asOf(url)));
+	}
 	if (path === '/admin/ledger/backfill' && m === 'POST') return json(await backfillLedger(env));
 	if (path === '/admin/ledger/retry' && m === 'POST') return json(await retryStuck(env));
 	if (path === '/admin/ledger/adjustments' && m === 'POST') {
