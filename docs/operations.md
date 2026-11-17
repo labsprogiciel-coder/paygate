@@ -37,17 +37,20 @@ Optional; off until the secret is set. `npx wrangler secret put SENTRY_DSN` with
 
 ### The books (Formance ledger)
 
-Every money movement is also booked as a double-entry posting in `ledger_postings` (migration 0003), so the gateway always knows **whose money is in each shared wallet**. A completed collection credits its product (and a PI-SPI payment an operator returns to its payer debits it again, once it is irrevocable: a `refund` posting to `world`), a payout that was sent is held, then paid out or released. Accounts per pool (a pawaPay country, or `PISPI` for the bank account):
+Every money movement is also booked as a double-entry posting in `ledger_postings` (migration 0003), so the gateway always knows **whose money is in each shared wallet**. A completed collection credits its product (and a PI-SPI payment an operator returns to its payer debits it again, once it is irrevocable: a `refund` posting to `world`), a payout that was sent is held, then paid out or released. One pool per wallet of the registry, named by the wallet id `{country}:{rail}` (`CIV:PAWAPAY`, `CIV:PISPI`; migration 0006 moved the first books onto these):
 
 | Account | Meaning |
 |---|---|
-| `tenants:{tenant}:{pool}:available` | what a product owns in the pool (tenant dashes become underscores) |
-| `tenants:{tenant}:{pool}:held` | payouts sent and not final (processing or unknown) |
-| `pool:{pool}:unallocated` | float the studio put in, or fees taken out, owned by no product |
+| `tenants:{tenant}:{country}:{rail}:available` | what a product owns in the wallet, e.g. `tenants:shop:CIV:PAWAPAY:available` (tenant dashes become underscores) |
+| `tenants:{tenant}:{country}:{rail}:held` | payouts sent and not final (processing or unknown) |
+| `pool:{country}:{rail}:unallocated` | float the studio put in, or fees taken out, owned by no product |
 | `world` | outside: customers, recipients, the studio's top-ups |
 
-- **Copy to Formance (optional).** Set the var or secret `FORMANCE_BASE_URL` (the stack, e.g. `https://<org>-<stack>.<region>.formance.cloud`) and the secrets `FORMANCE_CLIENT_ID` / `FORMANCE_CLIENT_SECRET`. Optional: `FORMANCE_LEDGER` (default `paygate`, created on first use) and `FORMANCE_TOKEN_URL` (default `/api/auth/oauth/token`). The cron sends unposted postings every minute; each posting's reference is the Formance reference, so a retry never books twice. If Formance is down, payments are untouched and postings wait.
+In Formance, one aggregate balance (`GET /v2/{ledger}/aggregate/balances?address=…`, with `pit=` for any past date) answers each question: one wallet `tenants::SEN:PISPI:` plus `pool:SEN:PISPI:`; one country, every rail, `tenants::CIV::` plus `pool:CIV::`; one product everywhere `tenants:shop:::`; one product in one country `tenants:shop:CIV::`.
+
+- **Copy to Formance (optional).** Set the var or secret `FORMANCE_BASE_URL` (the stack, e.g. `https://<org>-<stack>.<region>.formance.cloud`) and the secrets `FORMANCE_CLIENT_ID` / `FORMANCE_CLIENT_SECRET`. Optional: `FORMANCE_LEDGER` (default `paygate-v2`, created on first use; the first ledger, `paygate`, has the old pool addresses and is no longer written) and `FORMANCE_TOKEN_URL` (default `/api/auth/oauth/token`). The cron sends unposted postings every minute; each posting's reference is the Formance reference, so a retry never books twice. If Formance is down, payments are untouched and postings wait.
 - **Records, does not refuse (yet).** Every script allows an overdraft, so a product paying out more than it collected shows a **negative** balance instead of being refused. Enforcing it (Formance refusing the hold) is the next step, once the books have run clean.
+- **Moving to the books by wallet (migration 0006), once:** deploy the code, **then** run `npm run db:migrate`. The migration rewrites every posting to its wallet address and marks it unsent; the cron then copies them all to `paygate-v2` (postings still in the old shape are never sent). If `FORMANCE_LEDGER` is set in Cloudflare, set it to `paygate-v2` (or delete it) in the same step. Check **Wallets**: one card per wallet, each difference 0, Formance matching.
 - **First run:** after `npm run db:migrate`, open **Wallets** → **Rebuild from payments** to book the history. Then book the studio's float as an adjustment (**Book an adjustment…**, e.g. "opening float", positive), so each wallet's difference comes to zero. Book provider fees the same way (negative). An adjustment can't be edited: book the opposite to undo one.
 - **Formance refusing us** (401, 403, 429, 5xx) stops the sweep until the next minute, so postings don't lose their tries; a 401 fetches a new token. A posting that still fails 10 times is left for a person: fix the access, then **Wallets** → **Retry stuck postings** (the banner at the top).
 - **Every day at 03:00 UTC** the cron alerts when a wallet and its books differ, when postings are stuck on their way to Formance (after 10 tries), or when Formance and the journal disagree.
@@ -67,7 +70,7 @@ A new product may use every active wallet, both ways (collect and pay out). Narr
 
 ### Wallets
 
-The registry (migration 0005) names every account money sits in: `CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY` and `CIV:PISPI` to start (`PISPI_COUNTRY` decides which PI-SPI wallet a PI-SPI payment uses). Each payment records its wallet (`wallet_id`); the migration places the payments made before it and gives every product that existed then every wallet. Switch a wallet off (console: the wallet's page, or `PATCH /admin/wallets/{id}` `{ "status": "off" }`) to stop new payments through it at once, for every product. A second account on a rail (another country's PI-SPI account) is registered with `POST /admin/wallets`; sending payments through it needs its own credentials (PRO-39). The books still use pool names (`CIV`, `PISPI`); moving them onto wallet ids is PRO-37.
+The registry (migration 0005) names every account money sits in: `CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY` and `CIV:PISPI` to start (`PISPI_COUNTRY` decides which PI-SPI wallet a PI-SPI payment uses). Each payment records its wallet (`wallet_id`); the migration places the payments made before it and gives every product that existed then every wallet. Switch a wallet off (console: the wallet's page, or `PATCH /admin/wallets/{id}` `{ "status": "off" }`) to stop new payments through it at once, for every product. A second account on a rail (another country's PI-SPI account) is registered with `POST /admin/wallets`; sending payments through it needs its own credentials (PRO-39). The books have one pool per wallet, named by the wallet id (see The books).
 
 ## Modes
 

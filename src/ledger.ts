@@ -10,11 +10,13 @@
  * This first step records only: scripts allow overdrafts, so a tenant paying out more than it collected shows as a negative balance
  * instead of being refused. Enforcing it comes once the books have run clean.
  *
- * Chart of accounts (asset XOF, whole francs), one pool per wallet: the pawaPay country (CIV, SEN, BFA) or PISPI for the bank account:
- *   tenants:{tenant}:{pool}:available   what a product owns in the pool
- *   tenants:{tenant}:{pool}:held        payouts sent and not final (processing or unknown)
- *   pool:{pool}:unallocated             float the studio put in (or fees taken out), owned by no product
- *   @world                              outside: customers, recipients, the studio's own top-ups
+ * Chart of accounts (asset XOF, whole francs), one pool per wallet of the registry (src/wallets.ts), named by country and rail, the wallet id:
+ *   tenants:{tenant}:{country}:{rail}:available   what a product owns in the wallet (tenants:shop:CIV:PAWAPAY:available)
+ *   tenants:{tenant}:{country}:{rail}:held        payouts sent and not final (processing or unknown)
+ *   pool:{country}:{rail}:unallocated             float the studio put in (or fees taken out), owned by no product
+ *   @world                                        outside: customers, recipients, the studio's own top-ups
+ * So one Formance aggregate-balance pattern answers each question: one wallet `tenants::SEN:PISPI:` + `pool:SEN:PISPI:`, one country
+ * `tenants::CIV::` + `pool:CIV::`, one product `tenants:shop:::`, one product in one country `tenants:shop:CIV::`.
  * Formance addresses allow [a-zA-Z0-9_] segments; tenant ids are lowercase slugs, so their dashes become underscores (never ambiguous).
  */
 import { alert } from './alerts.ts';
@@ -26,12 +28,14 @@ export type PostingKind = 'in' | 'hold' | 'out' | 'release' | 'refund' | 'adjust
 export interface Posting { reference: string; payment_id: string | null; tenant_id: string | null; pool: string; kind: PostingKind; source: string; destination: string; amount: number; asset: string; note: string | null; created_at: number }
 
 const seg = (s: string) => s.replace(/-/g, '_');
-export const poolOf = (r: Pick<PaymentRow, 'rail' | 'country'>) => r.rail === 'mobile_money' ? (r.country ?? 'UNKNOWN') : 'PISPI';
+/** A pool is a wallet id, `<country>:<rail>`. Every payment records its wallet; one made before the registry falls back on its rail and country. */
+export const poolOf = (r: Pick<PaymentRow, 'rail' | 'country'> & Partial<Pick<PaymentRow, 'wallet_id'>>) =>
+	r.wallet_id ?? `${r.country ?? 'UNKNOWN'}:${r.rail === 'mobile_money' ? 'PAWAPAY' : 'PISPI'}`;
 export const tenantAccount = (tenant: string, pool: string, part: 'available' | 'held') => `tenants:${seg(tenant)}:${pool}:${part}`;
 export const unallocated = (pool: string) => `pool:${pool}:unallocated`;
 
 /** The postings a payment still needs, given those it has. Pure, so it is the whole policy in one place. */
-export function plan(r: Pick<PaymentRow, 'id' | 'tenant_id' | 'kind' | 'status' | 'attempts' | 'amount' | 'currency' | 'rail' | 'country'> & Partial<Pick<PaymentRow, 'return_status'>>, have: ReadonlySet<PostingKind>, now: number): Posting[] {
+export function plan(r: Pick<PaymentRow, 'id' | 'tenant_id' | 'kind' | 'status' | 'attempts' | 'amount' | 'currency' | 'rail' | 'country'> & Partial<Pick<PaymentRow, 'return_status' | 'wallet_id'>>, have: ReadonlySet<PostingKind>, now: number): Posting[] {
 	const pool = poolOf(r), available = tenantAccount(r.tenant_id, pool, 'available'), held = tenantAccount(r.tenant_id, pool, 'held');
 	const p = (kind: PostingKind, source: string, destination: string): Posting => ({ reference: `${r.id}:${kind}`, payment_id: r.id, tenant_id: r.tenant_id, pool, kind, source, destination, amount: r.amount, asset: r.currency || 'XOF', note: null, created_at: now });
 	if (r.kind === 'collection') {
@@ -123,12 +127,12 @@ export function booksFrom(balances: [string, number][]): PoolBooks[] {
 	const get = (pool: string) => { let b = pools.get(pool); if (!b) pools.set(pool, b = { pool, tenants: [], unallocated: 0, total: 0 }); return b; };
 	for (const [account, balance] of balances) {
 		let m: RegExpExecArray | null;
-		if ((m = /^tenants:([a-z0-9_]+):([A-Z]+):(available|held)$/.exec(account))) {
+		if ((m = /^tenants:([a-z0-9_]+):([A-Z]+:[A-Z]+):(available|held)$/.exec(account))) {
 			const b = get(m[2]!), tenant = m[1]!.replace(/_/g, '-');
 			let t = b.tenants.find((x) => x.tenant === tenant);
 			if (!t) b.tenants.push(t = { tenant, available: 0, held: 0 });
 			t[m[3] as 'available' | 'held'] += balance; b.total += balance;
-		} else if ((m = /^pool:([A-Z]+):unallocated$/.exec(account))) { const b = get(m[1]!); b.unallocated += balance; b.total += balance; }
+		} else if ((m = /^pool:([A-Z]+:[A-Z]+):unallocated$/.exec(account))) { const b = get(m[1]!); b.unallocated += balance; b.total += balance; }
 	}
 	for (const b of pools.values()) b.tenants.sort((x, y) => x.tenant.localeCompare(y.tenant));
 	return [...pools.values()].sort((x, y) => x.pool.localeCompare(y.pool));
@@ -137,7 +141,8 @@ export function booksFrom(balances: [string, number][]): PoolBooks[] {
 // ---- Formance ---------------------------------------------------------------------------------------------------------------------
 
 export const ledgerEnabled = (env: Env) => !!env.FORMANCE_BASE_URL;
-const LEDGER = (env: Env) => env.FORMANCE_LEDGER || 'paygate';
+/** paygate-v2: the books by wallet (migration 0006). The first ledger, `paygate`, holds the old addresses and is never written again. */
+const LEDGER = (env: Env) => env.FORMANCE_LEDGER || 'paygate-v2';
 const SWEEP_BATCH = 50;
 /** Postings that keep failing are left for a person after this many tries (an alert says so); the rest wait for the next sweep. */
 export const MAX_ATTEMPTS = 10;
@@ -199,7 +204,7 @@ async function formance(env: Env, method: string, path: string, body?: unknown):
 /** Sends the oldest unposted postings to Formance. A reference Formance already has counts as posted (a retry after a lost answer). */
 export async function postPending(env: Env, now = Date.now()): Promise<{ posted: number; failed: number }> {
 	if (!ledgerEnabled(env)) return { posted: 0, failed: 0 };
-	const { results } = await env.DB.prepare(`SELECT * FROM ledger_postings WHERE posted_at IS NULL AND attempts < ? ORDER BY created_at, reference LIMIT ?`).bind(MAX_ATTEMPTS, SWEEP_BATCH).all<Posting & { attempts: number }>();
+	const { results } = await env.DB.prepare(`SELECT * FROM ledger_postings WHERE posted_at IS NULL AND attempts < ? AND pool LIKE '%:%' ORDER BY created_at, reference LIMIT ?`).bind(MAX_ATTEMPTS, SWEEP_BATCH).all<Posting & { attempts: number }>();
 	let posted = 0, failed = 0, created = false;
 	for (const x of results) {
 		const tx = {
@@ -280,10 +285,10 @@ export async function booksReport(env: Env, providers: Providers) {
 	if (providers.disburse.balances) { try { wallets = await providers.disburse.balances(); } catch (e) { walletsError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
 	if (ledgerEnabled(env)) { try { formance = await formanceBalances(env); } catch (e) { formanceError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
 	const xof = (wallets ?? []).filter((w) => w.currency === 'XOF');
-	const pools = [...new Set([...journal.map((b) => b.pool), ...xof.map((w) => w.country), ...(formance ?? []).map((b) => b.pool)])].sort();
+	const pools = [...new Set([...journal.map((b) => b.pool), ...xof.map((w) => `${w.country}:PAWAPAY`), ...(formance ?? []).map((b) => b.pool)])].sort();
 	const rows: BooksRow[] = pools.map((pool) => {
 		const b = journal.find((x) => x.pool === pool) ?? { pool, tenants: [], unallocated: 0, total: 0 };
-		const w = xof.filter((x) => x.country === pool);
+		const w = xof.filter((x) => `${x.country}:PAWAPAY` === pool); // pawaPay reports its wallets; PI-SPI reports no balance
 		const wallet = w.length ? w.reduce((a, x) => a + x.balance, 0) : null;
 		return { ...b, wallet, difference: wallet === null ? null : wallet - b.total, formance: formance ? (formance.find((x) => x.pool === pool)?.total ?? 0) : null };
 	});

@@ -5,7 +5,7 @@ import type { Rail } from './providers/types.ts';
 /**
  * The wallets registry (migration 0005): every real account money sits in, named `<country>:<rail>` (CIV:PAWAPAY, CIV:PISPI), and which products
  * may collect or pay out through it. A payment records its wallet; a product can only use the wallets enabled for it, and an `off` wallet takes no
- * new payment (those already on their way still settle). The books keep their pool names for now (PRO-37 moves them onto wallet ids).
+ * new payment (those already on their way still settle). The books have one pool per wallet, named by the wallet id (src/ledger.ts).
  */
 export interface Wallet { id: string; rail: 'PAWAPAY' | 'PISPI'; country: string; currency: string; label: string | null; status: 'active' | 'off'; secrets_prefix: string | null; created_at: number }
 

@@ -240,7 +240,7 @@ export async function createPayment(env: Env, tenant: Tenant, kind: Kind, body: 
 	const providerId = n.rail === 'mobile_money' ? await providerIdFor(tenant, kind, n.reference) : null;
 	const insert = await env.DB.prepare(`INSERT OR IGNORE INTO payments (id, tenant_id, kind, reference, rail, operator, country, counterparty, amount, status, provider, provider_id, auth_type, method, request_hash, metadata, expires_at, created_at, updated_at, wallet_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		.bind(id, tenant.id, kind, n.reference, n.rail, n.operator, n.country, n.counterparty, n.amount, provider, providerId, authType, methodJson, hash, n.metadata, kind === 'collection' ? now + n.expiresInSeconds * 1000 : null, now, now, walletId).run();
+		.bind(id, tenant.id, kind, n.reference, n.rail, n.operator, n.country ?? walletId.split(':')[0], n.counterparty, n.amount, provider, providerId, authType, methodJson, hash, n.metadata, kind === 'collection' ? now + n.expiresInSeconds * 1000 : null, now, now, walletId).run();
 	if (!insert.meta.changes) { // a concurrent call with the same reference won: it starts the payment, we return it
 		const won = (await getRowFor(env, tenant.id, kind, n.reference))!;
 		if (won.request_hash !== hash) throw new ApiError(409, 'idempotency_conflict', 'A payment with this reference already exists with different details.');

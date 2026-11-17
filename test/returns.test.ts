@@ -83,8 +83,8 @@ test('an operator returns a completed PI-SPI payment: sent once to PI-SPI, follo
   assert.equal(row.status, 'completed', 'the payment itself stays completed: the money did arrive');
 
   assert.deepEqual(postings(g, id).map((p) => [p.kind, p.source, p.destination, p.amount]), [
-    ['in', 'world', 'tenants:shop:PISPI:available', 5000],
-    ['refund', 'tenants:shop:PISPI:available', 'world', 5000],
+    ['in', 'world', 'tenants:shop:CIV:PISPI:available', 5000],
+    ['refund', 'tenants:shop:CIV:PISPI:available', 'world', 5000],
   ], 'one refund posting: what the product held goes back out');
 
   const hooks = g.sqlite.prepare(`SELECT type, payload FROM webhook_deliveries WHERE type = 'payment.refunded'`).all() as { type: string; payload: string }[];
