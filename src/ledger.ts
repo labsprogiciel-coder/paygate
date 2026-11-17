@@ -2,7 +2,7 @@
  * The books: whose money is in the shared wallets. Payments say what happened; the ledger says who owns what.
  *
  * Every money movement is written as a double-entry posting to `ledger_postings` in D1, the journal (and the outbox): a collection that
- * completed credits its tenant, a payout that was sent is held, then paid out or released. One planner decides the postings from a payment's
+ * completed credits its tenant (and is debited again if an operator returns it to the payer), a payout that was sent is held, then paid out or released. One planner decides the postings from a payment's
  * state and the postings it already has, so live transitions, backfills and repeats all end in the same books, never twice.
  *
  * If FORMANCE_BASE_URL is set, a cron sweep copies the journal to a Formance ledger (the posting's reference is the Formance reference, so a
@@ -22,7 +22,7 @@ import type { PaymentRow } from './payments.ts';
 import type { Providers, WalletBalance } from './providers/types.ts';
 import { log, newId } from './util.ts';
 
-export type PostingKind = 'in' | 'hold' | 'out' | 'release' | 'adjust';
+export type PostingKind = 'in' | 'hold' | 'out' | 'release' | 'refund' | 'adjust';
 export interface Posting { reference: string; payment_id: string | null; tenant_id: string | null; pool: string; kind: PostingKind; source: string; destination: string; amount: number; asset: string; note: string | null; created_at: number }
 
 const seg = (s: string) => s.replace(/-/g, '_');
@@ -31,10 +31,15 @@ export const tenantAccount = (tenant: string, pool: string, part: 'available' | 
 export const unallocated = (pool: string) => `pool:${pool}:unallocated`;
 
 /** The postings a payment still needs, given those it has. Pure, so it is the whole policy in one place. */
-export function plan(r: Pick<PaymentRow, 'id' | 'tenant_id' | 'kind' | 'status' | 'attempts' | 'amount' | 'currency' | 'rail' | 'country'>, have: ReadonlySet<PostingKind>, now: number): Posting[] {
+export function plan(r: Pick<PaymentRow, 'id' | 'tenant_id' | 'kind' | 'status' | 'attempts' | 'amount' | 'currency' | 'rail' | 'country'> & Partial<Pick<PaymentRow, 'return_status'>>, have: ReadonlySet<PostingKind>, now: number): Posting[] {
 	const pool = poolOf(r), available = tenantAccount(r.tenant_id, pool, 'available'), held = tenantAccount(r.tenant_id, pool, 'held');
 	const p = (kind: PostingKind, source: string, destination: string): Posting => ({ reference: `${r.id}:${kind}`, payment_id: r.id, tenant_id: r.tenant_id, pool, kind, source, destination, amount: r.amount, asset: r.currency || 'XOF', note: null, created_at: now });
-	if (r.kind === 'collection') return r.status === 'completed' && !have.has('in') ? [p('in', 'world', available)] : [];
+	if (r.kind === 'collection') {
+		if (r.status !== 'completed') return []; // money that arrived without settling an order (a mismatch) was never booked, so its return books nothing either
+		const out = have.has('in') ? [] : [p('in', 'world', available)];
+		if (r.return_status === 'returned' && !have.has('refund')) out.push(p('refund', available, 'world')); // sent back to the payer: once, from what the product holds
+		return out;
+	}
 	const holding = have.has('hold') && !have.has('release') && !have.has('out');
 	if ((r.status === 'processing' || r.status === 'unknown') && r.attempts > 0 && !have.has('hold') && !have.has('out')) return [p('hold', available, held)];
 	if (r.status === 'completed' && !have.has('out')) return [p('out', holding ? held : available, 'world')]; // a late completion after a release pays from available again

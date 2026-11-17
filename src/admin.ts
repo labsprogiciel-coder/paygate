@@ -4,6 +4,7 @@ import { createApiKey, createTenant, getTenant, revokeApiKey, rotateWebhookSecre
 import { getRow, view, type PaymentRow } from './payments.ts';
 import { listDead, retryDelivery } from './webhooks.ts';
 import { resolvePayment } from './reconcile.ts';
+import { requestReturn, returnable } from './returns.ts';
 import { loadFloat } from './float.ts';
 import { attention, eventFeed, SOURCES, type Source } from './events.ts';
 import { adjustPool, backfillLedger, booksReport, retryStuck } from './ledger.ts';
@@ -34,7 +35,8 @@ const body = async (request: Request): Promise<Record<string, unknown>> => {
 };
 
 /** What the operator sees of a payment: the tenant's view plus the detail a tenant never gets. */
-const adminView = (env: Env, r: PaymentRow) => ({ ...view(env, r), tenant: r.tenant_id, provider: r.provider, country: r.country, providerId: r.provider_id, providerRef: r.provider_ref, failureDetail: r.failure_detail, attempts: r.attempts, version: r.version });
+const adminView = (env: Env, r: PaymentRow) => ({ ...view(env, r), tenant: r.tenant_id, provider: r.provider, country: r.country, providerId: r.provider_id, providerRef: r.provider_ref, failureDetail: r.failure_detail, attempts: r.attempts, version: r.version,
+	returnStatus: r.return_status, returnRef: r.return_ref, returnReason: r.return_reason, returnDetail: r.return_detail, returnRequestedAt: r.return_requested_at, returnedAt: r.returned_at });
 
 export async function adminApi(env: Env, request: Request, path: string, providers: Providers): Promise<Response | null> {
 	const admin = await requireAdmin(env, request);
@@ -117,7 +119,13 @@ export async function adminApi(env: Env, request: Request, path: string, provide
 		const r = await getRow(env, g[1]!);
 		if (!r) throw new ApiError(404, 'not_found', 'No such payment');
 		const events = (await env.DB.prepare(`SELECT type, actor, detail, created_at FROM payment_events WHERE payment_id = ? ORDER BY id`).bind(r.id).all()).results;
-		return json({ ...adminView(env, r), events });
+		return json({ ...adminView(env, r), events, returnable: await returnable(env, r) });
+	}
+	if ((g = /^\/admin\/payments\/(pg[0-9a-f]{18})\/return$/.exec(path)) && m === 'POST') {
+		// send a received PI-SPI payment back to its payer, in full; the reason is kept in the history (see src/returns.ts)
+		const b = await body(request);
+		if (typeof b.reason !== 'string' || !b.reason.trim()) throw new ApiError(400, 'invalid_reason', 'reason is required: say why the money goes back');
+		return json(adminView(env, await requestReturn(env, g[1]!, b.reason.trim().slice(0, 300), admin)));
 	}
 	if ((g = /^\/admin\/payments\/(pg[0-9a-f]{18})\/resolve$/.exec(path)) && m === 'POST') {
 		const b = await body(request);

@@ -53,7 +53,7 @@ Creating it also starts it, so you get `201` with the payment, `status: "process
   "status": "processing", "amount": 5000, "currency": "XOF", "operator": "orange", "counterparty": "+2250700000001",
   "nextStep": null, "authUrl": null, "qr": null,
   "method": { "authType": "PROVIDER_AUTH", "instructions": { "en": ["Dial *144#"], "fr": ["Composez *144#"] }, "codeInstructions": null },
-  "failure": null, "metadata": null, "createdAt": 1791982814330, "expiresAt": 1791983714330, "settledAt": null
+  "failure": null, "metadata": null, "createdAt": 1791982814330, "expiresAt": 1791983714330, "settledAt": null, "refund": null
 }
 ```
 
@@ -94,6 +94,7 @@ Set a URL with the operator. Events:
 | `payment.expired` | a collection's window ended unpaid |
 | `payment.unknown` | a disbursement's outcome is unknown: do nothing, wait |
 | `payment.mismatch` | PI-SPI: a payment arrived for the wrong amount or by the wrong route; nothing was settled, an operator looks |
+| `payment.refunded` | PI-SPI: an operator sent the money back to the payer and it is irrevocable; `data.refund.status` is `refunded` |
 | `ping` | `POST /v1/webhooks/test` |
 
 ```json
@@ -117,6 +118,7 @@ Set a URL with the operator. Events:
 - Settlement is by PI-SPI's own record of received payments, never the customer's word: irrevocable, on our alias, the right category, **exactly** the amount. Otherwise `payment.mismatch`. One bank payment settles one payment only.
 - With polling off (`PISPI_POLL`), nothing settles automatically: an operator confirms with `POST /admin/payments/{id}/resolve`.
 - `pispi_rtp` sends the customer a payment request. A customer is sent at most 3 per day.
+- **Refunds.** An operator can send a received PI-SPI payment back to its payer, in full (PI-SPI returns the whole amount; there is no partial refund). Ask the operator; products cannot start one. While it is on its way the payment's `refund` is `{ "status": "pending", "requestedAt": … }`; once it is irrevocable it is `"refunded"` with `refundedAt`, and you get `payment.refunded`. If PI-SPI rejects it, `refund.status` is `"failed"` and the operator decides what next. The payment's own `status` stays `completed`: the money did arrive. A refund of a mismatched payment (wrong amount) shows the same way on that payment.
 
 ## Operator API (`Authorization: Bearer <ADMIN_API_KEY or an operator's Clerk session token>`)
 
@@ -137,6 +139,7 @@ A Clerk session that is valid but not in `CLERK_OPERATOR_IDS` gets `403 not_oper
 | `GET /admin/payments/stats?tenant=&kind=` | the payments page's headline: `completed` `{ n, amount }`, `settled` and `successRate` for the last 24 h; `processing` and `unknown` `{ n, amount }` for everything still open, whatever its age |
 | `GET /admin/payments/{id}` | with its full history |
 | `POST /admin/payments/{id}/resolve` | `{ outcome: "completed" \| "failed", note }` for an `unknown` payout or a manually confirmed PI-SPI payment |
+| `POST /admin/payments/{id}/return` | `{ reason }`: sends a received PI-SPI payment back to its payer, in full (a completed one, or one that arrived for the wrong amount). `GET /admin/payments/{id}` says whether it can (`returnable`) and how it stands (`returnStatus`: `requested`, `initiated`, `returned`, `rejected`). Needs `PISPI_RETURNS`. |
 | `GET /admin/webhooks/dead`, `POST /admin/webhooks/{id}/retry` | undeliverable events |
 | `GET /admin/float`, `GET /admin/provider-events` | wallets; the last 100 provider callbacks as received |
 | `GET /admin/events?source=&problems=1&tenant=&payment=&before=&limit=` | one feed, newest first: payment status changes (`payment`), provider callbacks (`callback`), webhooks to tenants (`webhook`). `source` is a comma-separated list; `problems=1` keeps what needs a person (failed, unknown, mismatch, late payments; rejected callbacks; dead webhooks); pass the response's `next` as `before` for the next page |

@@ -28,6 +28,8 @@
     "PISPI_ENABLED": "true",
     "PISPI_POLL": "true",
     "PISPI_RTP": "true",
+    // operators may send a received PI-SPI payment back to its payer (moves money out): needs the retour_fonds.write scope on the client
+    "PISPI_RETURNS": "false",
     "PISPI_COUNTRY": "CI",
     "PI_SPI_PARTICIPANT": "CIC999",
     "PI_SPI_BUSINESS_API_URL": "https://no-mtls.piz.simulateurs.pi-bceao.com",
@@ -52,6 +54,7 @@
       "PISPI_ENABLED": "false",
       "PISPI_POLL": "false",
       "PISPI_RTP": "false",
+      "PISPI_RETURNS": "false",
       "PISPI_COUNTRY": "CI",
       "PI_SPI_PARTICIPANT": "",
       "PI_SPI_BUSINESS_API_URL": "",

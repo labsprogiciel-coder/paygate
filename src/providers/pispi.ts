@@ -5,10 +5,11 @@
  * The payment is confirmed by PI-SPI's own record of received payments (`GET /<participant>/paiements-recus`, scope paiement.read), never by the
  * customer's word. The participant code (for example BFC999) is part of the path: `/v1/...` is a different, empty namespace.
  * Reading and sending are separate switches: PISPI_POLL reads, PISPI_RTP also sends requests. Neither moves money out.
+ * PISPI_RETURNS allows an operator to send a received payment back to its payer (a return of funds): the one call here that moves money out.
  */
 import { on } from '../util.ts';
 
-type PispiEnv = Pick<Env, 'PISPI_ENABLED' | 'PISPI_POLL' | 'PISPI_RTP' | 'PISPI_COUNTRY' | 'PI_SPI_PARTICIPANT' | 'PI_SPI_BUSINESS_API_URL' | 'PI_SP_API_OAUTH_URL' | 'PI_SP_API_CLIENT_ID' | 'PI_SP_API_CLIENT_SECRET' | 'PI_SPI_API_KEY' | 'PI_SPI_ACCOUNT_ALIAS'>;
+type PispiEnv = Pick<Env, 'PISPI_ENABLED' | 'PISPI_POLL' | 'PISPI_RTP' | 'PISPI_RETURNS' | 'PISPI_COUNTRY' | 'PI_SPI_PARTICIPANT' | 'PI_SPI_BUSINESS_API_URL' | 'PI_SP_API_OAUTH_URL' | 'PI_SP_API_CLIENT_ID' | 'PI_SP_API_CLIENT_SECRET' | 'PI_SPI_API_KEY' | 'PI_SPI_ACCOUNT_ALIAS'>;
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** What the QR format and the payer's bank allow as the payment reference. */
@@ -24,6 +25,7 @@ export const pispiEnabled = (env: PispiEnv): boolean => on(env.PISPI_ENABLED) &&
 export const pispiPollEnabled = (env: PispiEnv): boolean =>
 	pispiEnabled(env) && on(env.PISPI_POLL) && !!(env.PI_SPI_PARTICIPANT && env.PI_SPI_BUSINESS_API_URL && env.PI_SP_API_OAUTH_URL && env.PI_SP_API_CLIENT_ID && env.PI_SP_API_CLIENT_SECRET && env.PI_SPI_API_KEY);
 export const pispiRtpEnabled = (env: PispiEnv): boolean => pispiPollEnabled(env) && on(env.PISPI_RTP);
+export const pispiReturnsEnabled = (env: PispiEnv): boolean => pispiPollEnabled(env) && on(env.PISPI_RETURNS);
 
 /** The reference the payer's bank shows with the payment, and the txId we match on: our payment id, upper case. */
 export const pispiTxId = (paymentId: string) => paymentId.toUpperCase();
@@ -111,4 +113,34 @@ export function judge(alias: string | null, p: { id: string; amount: number; rtp
 	if (exact) return { kind: 'paid', end2endId: exact.end2endId };
 	const odd = final[0]!;
 	return { kind: 'mismatch', end2endId: odd.end2endId, reason: odd.categorie !== category ? `category ${odd.categorie}, expected ${category}` : `${odd.montant} XOF received, ${p.amount} expected` };
+}
+
+/** Where a return of funds stands at PI-SPI: `unsent` when PI-SPI has no return for the payment (yet). */
+export type ReturnState = { state: 'returned' } | { state: 'initiated' } | { state: 'rejected'; reason: string } | { state: 'unsent' };
+const returnState = (j: { retourStatut?: string; retourStatutRaison?: string }): ReturnState =>
+	j.retourStatut === 'IRREVOCABLE' ? { state: 'returned' } : j.retourStatut === 'REJETE' ? { state: 'rejected', reason: j.retourStatutRaison ?? 'REJETE' }
+		: j.retourStatut ? { state: 'initiated' } : { state: 'unsent' };
+
+/**
+ * Sends a received payment back to its payer, in full (PI-SPI takes no amount). Idempotent per end2endId: a return already sent answers with its
+ * status, one in progress answers INITIE, and only a return PI-SPI rejected is sent again. Throws when PI-SPI cannot be reached or answers an error;
+ * the return may then have been registered or not, so the caller asks again (the same call) rather than assuming either.
+ */
+export async function returnFunds(env: PispiEnv, end2endId: string, now = Date.now()): Promise<ReturnState> {
+	const url = `${env.PI_SPI_BUSINESS_API_URL}/${encodeURIComponent(env.PI_SPI_PARTICIPANT)}/paiements/${encodeURIComponent(end2endId)}/retours`;
+	const call = async () => fetch(url, { method: 'PUT', headers: { authorization: `Bearer ${await accessToken(env, 'piz/retour_fonds.write', now)}`, 'x-api-key': env.PI_SPI_API_KEY! } });
+	let res = await call();
+	if (res.status === 401) { tokens.clear(); res = await call(); }
+	if (!res.ok) throw new Error(`PI-SPI retours: ${res.status} ${await reason(res)}`.trim());
+	return returnState((await res.json().catch(() => ({}))) as { retourStatut?: string; retourStatutRaison?: string });
+}
+
+/** Where the return of a received payment stands, read only (never sends anything): GET /paiements/{end2endId}. */
+export async function returnStatus(env: PispiEnv, end2endId: string, now = Date.now()): Promise<ReturnState> {
+	const url = `${env.PI_SPI_BUSINESS_API_URL}/${encodeURIComponent(env.PI_SPI_PARTICIPANT)}/paiements/${encodeURIComponent(end2endId)}`;
+	const call = async (token: string) => fetch(url, { headers: { authorization: `Bearer ${token}`, 'x-api-key': env.PI_SPI_API_KEY! } });
+	let res = await call(await accessToken(env, 'piz/paiement.read', now));
+	if (res.status === 401) { tokens.clear(); res = await call(await accessToken(env, 'piz/paiement.read', now)); }
+	if (!res.ok) throw new Error(`PI-SPI paiements: ${res.status} ${await reason(res)}`.trim());
+	return returnState((await res.json().catch(() => ({}))) as { retourStatut?: string; retourStatutRaison?: string });
 }

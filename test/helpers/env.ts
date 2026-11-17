@@ -96,7 +96,7 @@ export function createEnv(over: Record<string, unknown> = {}) {
 		DB: db, CACHE: createKv(),
 		LIVE: 'false', PROVIDER_MODE: 'sandbox', PAWAPAY_BASE_URL: 'https://api.sandbox.pawapay.io', PAWAPAY_API_TOKEN: 'test-token',
 		DEFAULT_MAX_AMOUNT: '2000000', FLOAT_FLOOR_XOF: '2000000',
-		PISPI_ENABLED: 'false', PISPI_POLL: 'false', PISPI_RTP: 'false', PISPI_COUNTRY: 'BF', PI_SPI_PARTICIPANT: '', PI_SPI_BUSINESS_API_URL: '', PI_SP_API_OAUTH_URL: '',
+		PISPI_ENABLED: 'false', PISPI_POLL: 'false', PISPI_RTP: 'false', PISPI_RETURNS: 'false', PISPI_COUNTRY: 'BF', PI_SPI_PARTICIPANT: '', PI_SPI_BUSINESS_API_URL: '', PI_SP_API_OAUTH_URL: '',
 		ADMIN_API_KEY: 'root-key-for-tests-0123456789', WEBHOOK_MASTER_SECRET: 'master-secret-for-tests-0123456789', ALERT_WEBHOOK_URL: ALERT_URL,
 		...over,
 	};

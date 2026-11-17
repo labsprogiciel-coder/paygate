@@ -23,7 +23,7 @@ Optional; without it the console asks for `ADMIN_API_KEY`. With it, operators si
 4. Have each operator sign in once: the console shows their Clerk user id. Add it to `CLERK_OPERATOR_IDS` (comma-separated) and deploy. An empty list lets nobody in.
 5. In Clerk, add the Worker's URL as an allowed origin for production instances. Session tokens are only accepted when issued for the Worker's own origin.
 
-PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`. Reading and sending are separate switches.
+PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`, `PISPI_RETURNS`. Reading and sending are separate switches. `PISPI_RETURNS` lets operators send a received payment back to its payer (the only PI-SPI call that moves money out): the PI-SPI client needs the `retour_fonds.write` scope, besides `paiement.read` and `demande_paiement.write`.
 
 ### Error reporting with Sentry
 
@@ -37,7 +37,7 @@ Optional; off until the secret is set. `npx wrangler secret put SENTRY_DSN` with
 
 ### The books (Formance ledger)
 
-Every money movement is also booked as a double-entry posting in `ledger_postings` (migration 0003), so the gateway always knows **whose money is in each shared wallet**. A completed collection credits its product, a payout that was sent is held, then paid out or released. Accounts per pool (a pawaPay country, or `PISPI` for the bank account):
+Every money movement is also booked as a double-entry posting in `ledger_postings` (migration 0003), so the gateway always knows **whose money is in each shared wallet**. A completed collection credits its product (and a PI-SPI payment an operator returns to its payer debits it again, once it is irrevocable: a `refund` posting to `world`), a payout that was sent is held, then paid out or released. Accounts per pool (a pawaPay country, or `PISPI` for the bank account):
 
 | Account | Meaning |
 |---|---|
@@ -83,7 +83,7 @@ Unsafe combinations stop the Worker (it answers 500 to everything) rather than r
 ## What the cron does (every minute)
 
 1. Delivers due webhooks.
-2. Asks the provider about open payments not looked at for a minute; sends a disbursement that was recorded but never sent; looks again, hourly, at failed or expired payments of the last day (a week for PI-SPI) in case they completed late.
+2. Asks the provider about open payments not looked at for a minute; sends a disbursement that was recorded but never sent; looks again, hourly, at failed or expired payments of the last day (a week for PI-SPI) in case they completed late. Follows PI-SPI returns of funds still on their way: a return PI-SPI may not have received is sent again (PI-SPI answers a repeat with the return it already has); one in progress is only read, never sent again.
 3. Every fifth minute: checks the wallets (alerts at most once per 12 hours per country and level).
 4. Copies new ledger postings to Formance, if it is set up. At 03:00 UTC: checks the books against the wallets and Formance.
 5. At :05 every hour: prunes old data (see Retention); at 03:05 UTC it also checks the database size.
@@ -153,7 +153,8 @@ Who decides: the operator on call proposes it; the studio lead agrees before a p
 | **Completed after being reported failed** | The customer was charged (collection) or the recipient paid (disbursement) after the product was told otherwise. Tell the product's owner; they may have refunded or re-paid. |
 | **Callback for a payment the gateway does not know** | Read `GET /admin/provider-events`. Usually a different environment pointing at the same pawaPay account, or a payment started elsewhere. |
 | **Webhook undeliverable** | Fix the product's endpoint, then `POST /admin/webhooks/{id}/retry`. |
-| **PI-SPI payment does not match** | The customer paid the wrong amount or by another route. Nothing was settled. Refund or complete by hand, then `resolve`. |
+| **PI-SPI payment does not match** | The customer paid the wrong amount or by another route. Nothing was settled. Either send it back (console: the payment, then **Return funds…**, or `POST /admin/payments/{id}/return`), or complete it by hand with `resolve` if the product accepts the amount. |
+| **PI-SPI rejected a return of funds** | The payer has not been paid back. Read the reason in the payment's history (`returnDetail`), fix what it names, then **Return funds…** again; or pay the customer back another way and tell the product (the books still count the money as theirs). |
 | **Wallet low / critical** | Top up that country's wallet at pawaPay. |
 
 ## Known limits
