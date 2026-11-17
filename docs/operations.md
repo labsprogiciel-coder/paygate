@@ -23,7 +23,7 @@ Optional; without it the console asks for `ADMIN_API_KEY`. With it, operators si
 4. Have each operator sign in once: the console shows their Clerk user id. Add it to `CLERK_OPERATOR_IDS` (comma-separated) and deploy. An empty list lets nobody in.
 5. In Clerk, add the Worker's URL as an allowed origin for production instances. Session tokens are only accepted when issued for the Worker's own origin.
 
-PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`, `PISPI_RETURNS`. Reading and sending are separate switches. `PISPI_RETURNS` lets operators send a received payment back to its payer (the only PI-SPI call that moves money out): the PI-SPI client needs the `retour_fonds.write` scope, besides `paiement.read` and `demande_paiement.write`.
+PI-SPI (optional): secrets `PI_SPI_ACCOUNT_ALIAS`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`, `PI_SPI_API_KEY`; vars `PI_SPI_PARTICIPANT`, `PI_SPI_BUSINESS_API_URL`, `PI_SP_API_OAUTH_URL`, then `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP`, `PISPI_RETURNS`. Reading and sending are separate switches. `PISPI_RETURNS` lets operators send a received payment back to its payer (the only PI-SPI call that moves money out): the PI-SPI client needs the `retour_fonds.write` scope, besides `paiement.read` and `demande_paiement.write`. That is the first account (the country of `PISPI_COUNTRY`); for more countries see **Wallets** below.
 
 ### Error reporting with Sentry
 
@@ -70,7 +70,15 @@ A new product may use every active wallet, both ways (collect and pay out). Narr
 
 ### Wallets
 
-The registry (migration 0005) names every account money sits in: `CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY` and `CIV:PISPI` to start (`PISPI_COUNTRY` decides which PI-SPI wallet a PI-SPI payment uses). Each payment records its wallet (`wallet_id`); the migration places the payments made before it and gives every product that existed then every wallet. Switch a wallet off (console: the wallet's page, or `PATCH /admin/wallets/{id}` `{ "status": "off" }`) to stop new payments through it at once, for every product. A second account on a rail (another country's PI-SPI account) is registered with `POST /admin/wallets`; sending payments through it needs its own credentials (PRO-39). The books have one pool per wallet, named by the wallet id (see The books).
+The registry (migration 0005) names every account money sits in: `CIV:PAWAPAY`, `SEN:PAWAPAY`, `BFA:PAWAPAY` and `CIV:PISPI` to start (`PISPI_COUNTRY` decides which PI-SPI wallet a PI-SPI payment uses). Each payment records its wallet (`wallet_id`); the migration places the payments made before it and gives every product that existed then every wallet. Switch a wallet off (console: the wallet's page, or `PATCH /admin/wallets/{id}` `{ "status": "off" }`) to stop new payments through it at once, for every product. A PI-SPI account serves one country. To add another (Senegal, say), with no code change:
+
+1. Get the account from the BCEAO/participant: its receiving alias, participant code, API key, and an OAuth client with the same scopes as the first.
+2. Set its secrets under one prefix: `npx wrangler secret put PI_SPI_SEN_ACCOUNT_ALIAS`, then `PI_SPI_SEN_PARTICIPANT`, `PI_SPI_SEN_API_KEY`, `PI_SPI_SEN_CLIENT_ID`, `PI_SPI_SEN_CLIENT_SECRET`. Optionally `PI_SPI_SEN_BUSINESS_API_URL` and `PI_SPI_SEN_OAUTH_URL`; otherwise the shared `PI_SPI_BUSINESS_API_URL` and `PI_SP_API_OAUTH_URL` are used.
+3. Register the wallet: `POST /admin/wallets {"id":"SEN:PISPI","label":"PI-SPI Senegal","secretsPrefix":"PI_SPI_SEN"}`.
+4. Check **Providers** → PI-SPI: the account must show no missing secrets.
+5. Enable it for the products that should use it (the product's page, or `PUT /admin/tenants/{id}/wallets/SEN:PISPI`). A product with PI-SPI in two countries must then send `country` with each PI-SPI payment.
+
+The first account, the wallet of `PISPI_COUNTRY` with no prefix, keeps the original names (`PI_SPI_ACCOUNT_ALIAS`, `PI_SPI_PARTICIPANT`, `PI_SPI_API_KEY`, `PI_SP_API_CLIENT_ID`, `PI_SP_API_CLIENT_SECRET`). The switches `PISPI_ENABLED`, `PISPI_POLL`, `PISPI_RTP` and `PISPI_RETURNS` apply to every account. Each account has its own tokens, is polled at its own participant, and its money has its own pool in the books. One account down does not stop the others. The books have one pool per wallet, named by the wallet id (see The books).
 
 ## Modes
 

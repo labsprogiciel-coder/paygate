@@ -1,6 +1,7 @@
 import { ApiError } from './errors.ts';
 import type { Kind } from './ids.ts';
 import type { Rail } from './providers/types.ts';
+import { pispiCountry } from './providers/pispi.ts';
 
 /**
  * The wallets registry (migration 0005): every real account money sits in, named `<country>:<rail>` (CIV:PAWAPAY, CIV:PISPI), and which products
@@ -11,13 +12,27 @@ export interface Wallet { id: string; rail: 'PAWAPAY' | 'PISPI'; country: string
 
 const COUNTRIES = ['CIV', 'SEN', 'BFA'] as const;
 const ISO3: Record<string, string> = { CI: 'CIV', SN: 'SEN', BF: 'BFA' };
-/** The country of the one PI-SPI account, as PISPI_COUNTRY says it (ISO 3166 alpha-2, default BF), in the registry's alpha-3. */
-export const pispiCountry = (env: Pick<Env, 'PISPI_COUNTRY'>) => ISO3[(env.PISPI_COUNTRY || 'BF').toUpperCase()] ?? (env.PISPI_COUNTRY || 'BF').toUpperCase();
 const WALLET_ID = /^(CIV|SEN|BFA):(PAWAPAY|PISPI)$/;
+export { pispiCountry };
 
-/** The wallet a payment goes through: pawaPay in the phone's country, or the PI-SPI account. */
-export function walletFor(env: Pick<Env, 'PISPI_COUNTRY'>, rail: Rail, country: string | null): string {
-	return rail === 'mobile_money' ? `${country}:PAWAPAY` : `${pispiCountry(env)}:PISPI`;
+/** A country as a product may name it (CIV or CI), in the registry's alpha-3; null when it is not one the gateway serves. */
+export function countryCode(v: unknown): string | null {
+	if (typeof v !== 'string') return null;
+	const c = v.trim().toUpperCase();
+	return (COUNTRIES as readonly string[]).includes(c) ? c : ISO3[c] ?? null;
+}
+
+/**
+ * The wallet a payment goes through: pawaPay in the phone's country; for PI-SPI, the account of the country the product named, or else the
+ * product's only PI-SPI wallet (the first account, PISPI_COUNTRY, when it has none, so the refusal names it). Two or more: the product must say which.
+ */
+export async function walletFor(env: Env, tenantId: string, rail: Rail, country: string | null, kind: Kind): Promise<string> {
+	if (rail === 'mobile_money') return `${country}:PAWAPAY`;
+	if (country) return `${country}:PISPI`;
+	const { results } = await env.DB.prepare(`SELECT w.id FROM wallets w JOIN tenant_wallets tw ON tw.wallet_id = w.id AND tw.tenant_id = ? WHERE w.rail = 'PISPI' AND w.status = 'active' AND tw.${kind === 'collection' ? 'collect' : 'payout'} = 1 ORDER BY w.id`)
+		.bind(tenantId).all<{ id: string }>();
+	if (results.length > 1) throw new ApiError(400, 'country_required', `This account has a PI-SPI wallet in several countries: say which with country (${results.map((r) => r.id.split(':')[0]).join(', ')})`, { countries: results.map((r) => r.id.split(':')[0]) });
+	return results[0]?.id ?? `${pispiCountry(env)}:PISPI`;
 }
 
 /** Why this product cannot use this wallet in this direction, or null when it can. */
@@ -31,9 +46,10 @@ export async function walletRefusal(env: Env, tenantId: string, walletId: string
 }
 
 /** Refuses the payment before anything is recorded or sent when the product may not use the wallet. */
-export async function requireWallet(env: Env, tenantId: string, walletId: string, kind: Kind): Promise<void> {
+export async function requireWallet(env: Env, tenantId: string, walletId: string, kind: Kind): Promise<Wallet> {
 	const why = await walletRefusal(env, tenantId, walletId, kind);
 	if (why) throw new ApiError(422, 'wallet_not_enabled', why, { wallet: walletId });
+	return (await env.DB.prepare(`SELECT * FROM wallets WHERE id = ?`).bind(walletId).first<Wallet>())!;
 }
 
 export const listWallets = async (env: Env) => (await env.DB.prepare(`SELECT * FROM wallets ORDER BY rail, country`).all<Wallet>()).results;

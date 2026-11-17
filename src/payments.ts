@@ -2,13 +2,13 @@ import { alert } from './alerts.ts';
 import { ApiError } from './errors.ts';
 import { providerIdFor, type Kind } from './ids.ts';
 import { OPERATORS, parsePhone } from './providers/phone.ts';
-import { judge, PAYER_ALIAS, pispiAlias, pispiEnabled, pispiPollEnabled, pispiQr, pispiRtpEnabled, pispiTxId, receivedPaymentsFor, sendPaymentRequest, type PispiQr } from './providers/pispi.ts';
+import { judge, loadPispiAccount, PAYER_ALIAS, pispiAccount, pispiCountry, pispiEnabled, pispiPollEnabled, pispiQr, pispiRtpEnabled, pispiTxId, receivedPaymentsFor, sendPaymentRequest, type PispiAccount, type PispiQr } from './providers/pispi.ts';
 import type { Providers, Rail } from './providers/types.ts';
 import { decide, isOpen, NOT_FOUND_DETAIL, NOT_FOUND_GRACE_MS, PISPI_LATE_MS, RECHECK_FAILED_FOR_MS, type Observed, type Status } from './states.ts';
 import type { Tenant } from './tenants.ts';
 import { syncLedger } from './ledger.ts';
 import { canonical, log, newId, on, safeUrl, sha256Hex } from './util.ts';
-import { requireWallet, walletFor } from './wallets.ts';
+import { countryCode, requireWallet, walletFor } from './wallets.ts';
 
 export interface PaymentRow {
 	id: string; tenant_id: string; kind: Kind; reference: string; rail: Rail; operator: string | null; country: string | null; counterparty: string;
@@ -39,7 +39,7 @@ export interface PaymentView {
 export function view(env: Env, r: PaymentRow): PaymentView {
 	const open = r.status === 'processing';
 	let method: PaymentView['method'] = null;
-	if (r.method && open) {
+	if (r.method && open && r.rail === 'mobile_money') {
 		try {
 			const m = JSON.parse(r.method) as { instructions?: Instructions | null; codeInstructions?: Instructions | null };
 			method = { authType: r.auth_type, instructions: m.instructions ?? null, codeInstructions: m.codeInstructions ?? null };
@@ -48,7 +48,7 @@ export function view(env: Env, r: PaymentRow): PaymentView {
 	return {
 		id: r.id, object: r.kind, reference: r.reference, rail: r.rail, status: r.status, amount: r.amount, currency: r.currency, operator: r.operator, counterparty: r.counterparty,
 		nextStep: open ? r.next_step : null, authUrl: open ? r.auth_url : null,
-		qr: r.rail === 'pispi_qr' && open ? pispiQr(env, r) : null, method,
+		qr: r.rail === 'pispi_qr' && open ? qrOf(env, r) : null, method,
 		failure: r.status === 'failed' ? r.failure : null,
 		metadata: r.metadata ? JSON.parse(r.metadata) : null, createdAt: r.created_at, expiresAt: r.expires_at, settledAt: r.settled_at,
 		refund: r.return_status ? { status: r.return_status === 'returned' ? 'refunded' : r.return_status === 'rejected' ? 'failed' : 'pending', requestedAt: r.return_requested_at, refundedAt: r.returned_at } : null,
@@ -125,6 +125,12 @@ const event = (env: Env, id: string, type: string, actor: string, detail: string
 
 // ---- creating ---------------------------------------------------------------------------------------------------------------------
 
+/** The QR of a PI-SPI payment: the alias and country of the account it was made for (kept with the payment), or the first account's for older ones. */
+function qrOf(env: Env, r: PaymentRow): PispiQr | null {
+	let a: Pick<PispiAccount, 'alias' | 'countryCode'> | null = null;
+	try { a = r.method ? (JSON.parse(r.method) as { qr?: Pick<PispiAccount, 'alias' | 'countryCode'> }).qr ?? null : null; } catch { /* below */ }
+	return pispiQr(a ?? pispiAccount(env, { id: r.wallet_id ?? `${pispiCountry(env)}:PISPI`, secrets_prefix: null }), r);
+}
 const REFERENCE = /^[A-Za-z0-9_-]{3,64}$/;
 const MIN_AMOUNT = 100;
 const MAX_METADATA = 2048;
@@ -167,9 +173,16 @@ function normalise(env: Env, tenant: Tenant, kind: Kind, body: unknown): Normali
 		const p = parsePhone(counterparty);
 		if (!p) throw bad('phone must be an E.164 number in Côte d\'Ivoire, Senegal or Burkina Faso, e.g. +2250789458900', 'invalid_phone');
 		country = p.country;
-	} else if (rail === 'pispi_rtp') {
-		counterparty = typeof b.payerAlias === 'string' ? b.payerAlias.trim().toLowerCase() : '';
-		if (!PAYER_ALIAS.test(counterparty)) throw bad('payerAlias is the customer\'s PI-SPI alias, a UUID like 9b1b3499-3e50-435b-b757-ac7a83d8aa96', 'invalid_payer_alias');
+	} else {
+		if (rail === 'pispi_rtp') {
+			counterparty = typeof b.payerAlias === 'string' ? b.payerAlias.trim().toLowerCase() : '';
+			if (!PAYER_ALIAS.test(counterparty)) throw bad('payerAlias is the customer\'s PI-SPI alias, a UUID like 9b1b3499-3e50-435b-b757-ac7a83d8aa96', 'invalid_payer_alias');
+		}
+		// which PI-SPI account (one per country): optional while the product has only one
+		if (b.country !== undefined && b.country !== null) {
+			country = countryCode(b.country);
+			if (!country) throw bad('country is CIV, SEN or BFA (or CI, SN, BF)', 'invalid_country');
+		}
 	}
 
 	const out: Normalised = { reference: b.reference, rail, operator, counterparty, country, amount: b.amount, metadata, expiresInSeconds: EXPIRY[rail] };
@@ -193,7 +206,7 @@ function normalise(env: Env, tenant: Tenant, kind: Kind, body: unknown): Normali
 }
 
 /** What makes two requests "the same" for idempotency: everything that decides who is charged or paid, how much, and how. The metadata and the one-time code are not part of it. */
-const requestHash = (n: Normalised) => sha256Hex(canonical({ rail: n.rail, operator: n.operator, counterparty: n.counterparty, amount: n.amount }));
+const requestHash = (n: Normalised) => sha256Hex(canonical({ rail: n.rail, operator: n.operator, counterparty: n.counterparty, amount: n.amount, ...(n.rail !== 'mobile_money' && n.country ? { country: n.country } : {}) }));
 
 export interface Created { payment: PaymentView; created: boolean }
 
@@ -208,8 +221,8 @@ export async function createPayment(env: Env, tenant: Tenant, kind: Kind, body: 
 	}
 
 	// the product must be allowed to use this wallet in this direction (src/wallets.ts)
-	const walletId = walletFor(env, n.rail, n.country);
-	await requireWallet(env, tenant.id, walletId, kind);
+	const walletId = await walletFor(env, tenant.id, n.rail, n.country, kind);
+	const wallet = await requireWallet(env, tenant.id, walletId, kind);
 
 	// the provider must be able to do this, and the amount must fit its limits: refused now, before anything is recorded or any money moves
 	let methodJson: string | null = null, authType: string | null = null, provider = providers.collect.name;
@@ -227,9 +240,11 @@ export async function createPayment(env: Env, tenant: Tenant, kind: Kind, body: 
 		provider = providers.disburse.name;
 	} else {
 		provider = 'pispi';
-		if (!pispiEnabled(env)) throw new ApiError(422, 'provider_unavailable', 'PI-SPI is not available');
+		const account = pispiAccount(env, wallet);
+		if (!pispiEnabled(env, account)) throw new ApiError(422, 'provider_unavailable', `PI-SPI is not available in ${wallet.country}`);
+		methodJson = JSON.stringify({ qr: { alias: account.alias, countryCode: account.countryCode } });
 		if (n.rail === 'pispi_rtp') {
-			if (!pispiRtpEnabled(env)) throw new ApiError(422, 'provider_unavailable', 'PI-SPI payment requests are not available');
+			if (!pispiRtpEnabled(env, account)) throw new ApiError(422, 'provider_unavailable', 'PI-SPI payment requests are not available');
 			// a payment request lands on a stranger's phone: a customer is not asked over and over
 			const recent = await env.DB.prepare(`SELECT COUNT(*) AS n FROM payments WHERE rail = 'pispi_rtp' AND counterparty = ? AND created_at > ?`).bind(n.counterparty, now - DAY).first<{ n: number }>();
 			if ((recent?.n ?? 0) >= RTP_PER_ALIAS_DAY) throw new ApiError(429, 'rtp_limit', 'This customer has been sent too many payment requests today');
@@ -258,7 +273,7 @@ async function startCollection(env: Env, row: PaymentRow, n: Normalised, provide
 	if (row.rail === 'pispi_qr') return row; // nothing to start: the customer scans the code; the payment is found by polling (or confirmed by a person)
 	if (row.rail === 'pispi_rtp') {
 		try {
-			const r = await sendPaymentRequest(env, { txId: pispiTxId(row.id), payerAlias: row.counterparty, amount: row.amount, label: 'Payment' }, now);
+			const r = await sendPaymentRequest(await loadPispiAccount(env, row.wallet_id), { txId: pispiTxId(row.id), payerAlias: row.counterparty, amount: row.amount, label: 'Payment' }, now);
 			if (r.state === 'rejected') return (await applyObserved(env, row, { state: 'failed', error: 'The payment request was declined', detail: `PI-SPI ${r.reason}` }, 'provider', now)).row;
 			await env.DB.prepare(`UPDATE payments SET attempts = 1, provider_ref = COALESCE(?, provider_ref) WHERE id = ?`).bind(r.end2endId, row.id).run();
 			await event(env, row.id, 'accepted', 'provider', r.end2endId, now);
@@ -356,8 +371,9 @@ async function refreshMobileMoney(env: Env, r: PaymentRow, providers: Providers,
  * amount. Anything else is left for a person (a mismatch also alerts). A late payment on an expired one is honoured. One received payment settles one order.
  */
 async function refreshPispi(env: Env, r: PaymentRow, now: number): Promise<PaymentRow> {
-	if (!pispiPollEnabled(env)) return r;
-	const verdict = judge(pispiAlias(env), { id: r.id, amount: r.amount, rtp: r.rail === 'pispi_rtp', payerAlias: r.counterparty }, await receivedPaymentsFor(env, pispiTxId(r.id), now));
+	const account = await loadPispiAccount(env, r.wallet_id); // the account the payment was made for: its alias, its participant, its token
+	if (!pispiPollEnabled(env, account)) return r;
+	const verdict = judge(account.alias, { id: r.id, amount: r.amount, rtp: r.rail === 'pispi_rtp', payerAlias: r.counterparty }, await receivedPaymentsFor(account, pispiTxId(r.id), now));
 	if (verdict.kind === 'paid') {
 		const used = await env.DB.prepare(`SELECT id FROM payments WHERE provider_ref = ? AND id <> ? AND provider = 'pispi'`).bind(verdict.end2endId, r.id).first();
 		if (used) return r;

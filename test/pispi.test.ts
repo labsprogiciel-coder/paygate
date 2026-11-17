@@ -148,7 +148,7 @@ test('payment requests: a rejected one fails cleanly, a PI-SPI error is not blam
 test('PI-SPI is never available for payouts, and the methods endpoint reflects the switches', async () => {
   const g = await setup(PISPI);
   assert.equal((await g.call('POST', '/v1/disbursements', { reference: 'p-1', amount: 5000, rail: 'pispi_qr' })).body.error.code, 'invalid_rail');
-  assert.deepEqual((await g.call('GET', '/v1/methods?rail=pispi_qr')).body, { rail: 'pispi_qr', available: true, direction: 'collect', manualConfirmation: false });
+  assert.deepEqual((await g.call('GET', '/v1/methods?rail=pispi_qr')).body, { rail: 'pispi_qr', direction: 'collect', wallet: 'CIV:PISPI', country: 'CIV', available: true, manualConfirmation: false });
   const noPoll = await setup({ ...PISPI, PISPI_POLL: 'false' });
   assert.equal((await noPoll.call('GET', '/v1/methods?rail=pispi_qr')).body.manualConfirmation, true, 'without polling a person must confirm');
   assert.equal((await noPoll.call('GET', '/v1/methods?rail=pispi_rtp')).body.available, false, 'requests need polling too');

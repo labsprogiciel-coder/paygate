@@ -53,6 +53,7 @@ test('PI-SPI: QR and payment-request rails, and the receiving alias shown masked
 	const pi = (await g.admin('GET', '/admin/providers')).body.data.find((p: any) => p.id === 'pispi');
 	assert.equal(pi.active, true);
 	assert.deepEqual(pi.channels.map((c: any) => [c.country, c.code, c.collect.status, c.payout]), [['CIV', 'PISPI_QR', 'OPERATIONAL', null], ['CIV', 'PISPI_RTP', 'CLOSED', null]]);
-	assert.deepEqual(pi.accounts, [{ kind: 'alias', label: 'Receiving alias', country: 'CIV', currency: 'XOF', value: '3fa85f64…afa6', participant: 'CIC999' }]);
+	assert.deepEqual(pi.accounts, [{ kind: 'alias', label: 'CIV:PISPI receiving alias', wallet: 'CIV:PISPI', country: 'CIV', currency: 'XOF', value: '3fa85f64…afa6', participant: 'CIC999', status: 'active', secretsPrefix: null,
+		missing: ['PI_SPI_API_KEY', 'PI_SP_API_CLIENT_ID', 'PI_SP_API_CLIENT_SECRET', 'PI_SPI_BUSINESS_API_URL', 'PI_SP_API_OAUTH_URL'] }], 'the names of the secrets still to set, never their values');
 	assert.ok(!JSON.stringify(pi).includes('5717-4562'), 'the full alias is not sent');
 });
