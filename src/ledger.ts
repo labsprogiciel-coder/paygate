@@ -113,11 +113,13 @@ export async function adjustPool(env: Env, pool: string, amount: number, note: s
 
 export interface PoolBooks { pool: string; tenants: { tenant: string; available: number; held: number }[]; unallocated: number; total: number }
 
-/** The journal's balances per pool (computed in D1, so they exist with or without Formance). */
-export async function journalBalances(env: Env): Promise<PoolBooks[]> {
-	const { results } = await env.DB.prepare(`SELECT account, SUM(delta) AS balance FROM (
-		SELECT destination AS account, amount AS delta FROM ledger_postings UNION ALL SELECT source AS account, -amount AS delta FROM ledger_postings
-	) WHERE account != 'world' GROUP BY account`).all<{ account: string; balance: number }>();
+/** The journal's balances per pool (computed in D1, so they exist with or without Formance), as of `at` (ms) when given: postings dated up to then. */
+export async function journalBalances(env: Env, at: number | null = null): Promise<PoolBooks[]> {
+	const upTo = at === null ? '' : 'WHERE created_at <= ?1';
+	const q = env.DB.prepare(`SELECT account, SUM(delta) AS balance FROM (
+		SELECT destination AS account, amount AS delta FROM ledger_postings ${upTo} UNION ALL SELECT source AS account, -amount AS delta FROM ledger_postings ${upTo}
+	) WHERE account != 'world' GROUP BY account`);
+	const { results } = await (at === null ? q : q.bind(at)).all<{ account: string; balance: number }>();
 	return booksFrom(results.map((r) => [r.account, r.balance]));
 }
 
@@ -239,22 +241,25 @@ export async function postPending(env: Env, now = Date.now()): Promise<{ posted:
 	return { posted, failed };
 }
 
-/** Formance's balances per pool, read from every account (the ledger is small: one account per tenant and pool). */
-export async function formanceBalances(env: Env): Promise<PoolBooks[]> {
-	const all: [string, number][] = [];
-	let cursor: string | undefined;
-	for (let page = 0; page < 50; page++) {
-		const q = new URLSearchParams({ expand: 'volumes', pageSize: '100' });
-		if (cursor) q.set('cursor', cursor);
-		const j = (await formance(env, 'GET', `/accounts?${q}`)) as { cursor?: { data?: { address: string; volumes?: Record<string, { input: number; output: number; balance?: number }> }[]; hasMore?: boolean; next?: string } };
-		for (const a of j.cursor?.data ?? []) {
-			const v = Object.entries(a.volumes ?? {}).find(([asset]) => asset.split('/')[0] === 'XOF')?.[1];
-			if (v) all.push([a.address, Number(v.balance ?? Number(v.input) - Number(v.output))]);
-		}
-		if (!j.cursor?.hasMore || !j.cursor.next) break;
-		cursor = j.cursor.next;
-	}
-	return booksFrom(all);
+/**
+ * What Formance holds for an address pattern, in XOF, as of `at` (each posting's own date) when given: one aggregate-balance call, however many
+ * accounts match. Empty segments match anything (`tenants::SEN:PISPI:` is every product's money in that wallet). The filter goes in `?query=`,
+ * which the ledger reads when there is no body: a Worker cannot send a body with GET.
+ */
+export async function formanceAggregate(env: Env, patterns: string[], at: number | null = null): Promise<number> {
+	const filter = patterns.length === 1 ? { $match: { address: patterns[0] } } : { $or: patterns.map((address) => ({ $match: { address } })) };
+	const q = new URLSearchParams({ query: JSON.stringify(filter) });
+	if (at !== null) q.set('pit', new Date(at).toISOString());
+	const j = (await formance(env, 'GET', `/aggregate/balances?${q}`)) as { data?: Record<string, unknown> } | null;
+	return Object.entries(j?.data ?? {}).filter(([asset]) => asset.split('/')[0] === 'XOF').reduce((n, [, v]) => n + Number(v), 0);
+}
+/** A wallet's money in Formance: every product's accounts in it and its unallocated float. */
+export const walletPatterns = (pool: string) => [`tenants::${pool}:`, `pool:${pool}:`];
+
+/** Formance's total per wallet, one aggregate call each (no paging, however many products), as of `at` when given. */
+export async function formanceWalletTotals(env: Env, pools: string[], at: number | null = null): Promise<Map<string, number>> {
+	const totals = await Promise.all(pools.map(async (pool) => [pool, await formanceAggregate(env, walletPatterns(pool), at)] as const));
+	return new Map(totals);
 }
 
 /** Gives stuck postings their tries back (after Formance access is fixed): the next sweep sends them again. */
@@ -273,26 +278,57 @@ export async function outboxHealth(env: Env) {
 // ---- reconciliation ---------------------------------------------------------------------------------------------------------------
 
 export interface BooksRow extends PoolBooks { wallet: number | null; difference: number | null; formance: number | null }
+/** A country's wallets added up (every rail): the subtotal row of the books. */
+export interface CountryRow { country: string; pools: string[]; total: number; wallet: number | null; difference: number | null; formance: number | null }
 
 /**
  * The books beside the money: per pool, what the journal says each tenant owns, what the provider's wallet really holds, and what
  * Formance has. wallet - total is money the books cannot explain (provider fees, float put in, history from before the books) until an
  * operator books it as an adjustment. Formance differing from the journal means the copy is behind (see the outbox) or was changed.
  */
-export async function booksReport(env: Env, providers: Providers) {
-	const [journal, outbox] = await Promise.all([journalBalances(env), outboxHealth(env)]);
-	let wallets: WalletBalance[] | null = null, walletsError: string | null = null, formance: PoolBooks[] | null = null, formanceError: string | null = null;
-	if (providers.disburse.balances) { try { wallets = await providers.disburse.balances(); } catch (e) { walletsError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
-	if (ledgerEnabled(env)) { try { formance = await formanceBalances(env); } catch (e) { formanceError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
+export async function booksReport(env: Env, providers: Providers, at: number | null = null) {
+	const [journal, outbox, registry] = await Promise.all([journalBalances(env, at), outboxHealth(env),
+		env.DB.prepare(`SELECT id FROM wallets WHERE status = 'active'`).all<{ id: string }>().then((r) => r.results.map((w) => w.id), () => [] as string[])]);
+	let wallets: WalletBalance[] | null = null, walletsError: string | null = null, formance: Map<string, number> | null = null, formanceError: string | null = null;
+	// a provider only reports what its wallets hold now: as of a past date there is nothing to compare with (the statement is)
+	if (providers.disburse.balances && at === null) { try { wallets = await providers.disburse.balances(); } catch (e) { walletsError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
 	const xof = (wallets ?? []).filter((w) => w.currency === 'XOF');
-	const pools = [...new Set([...journal.map((b) => b.pool), ...xof.map((w) => `${w.country}:PAWAPAY`), ...(formance ?? []).map((b) => b.pool)])].sort();
+	// one row per wallet: every active wallet of the registry, and any other the journal or the provider knows
+	const pools = [...new Set([...registry, ...journal.map((b) => b.pool), ...xof.map((w) => `${w.country}:PAWAPAY`)])].sort();
+	if (ledgerEnabled(env)) { try { formance = await formanceWalletTotals(env, pools, at); } catch (e) { formanceError = String(e instanceof Error ? e.message : e).slice(0, 200); } }
 	const rows: BooksRow[] = pools.map((pool) => {
 		const b = journal.find((x) => x.pool === pool) ?? { pool, tenants: [], unallocated: 0, total: 0 };
 		const w = xof.filter((x) => `${x.country}:PAWAPAY` === pool); // pawaPay reports its wallets; PI-SPI reports no balance
 		const wallet = w.length ? w.reduce((a, x) => a + x.balance, 0) : null;
-		return { ...b, wallet, difference: wallet === null ? null : wallet - b.total, formance: formance ? (formance.find((x) => x.pool === pool)?.total ?? 0) : null };
+		return { ...b, wallet, difference: wallet === null ? null : wallet - b.total, formance: formance ? (formance.get(pool) ?? 0) : null };
 	});
-	return { enabled: ledgerEnabled(env), ledger: ledgerEnabled(env) ? LEDGER(env) : null, outbox, walletsError, formanceError, pools: rows };
+	// a subtotal per country, every rail: what the studio holds there
+	const sum = (xs: (number | null)[]) => xs.some((x) => x !== null) ? xs.reduce<number>((n, x) => n + (x ?? 0), 0) : null;
+	const countries: CountryRow[] = [...new Set(rows.map((r) => r.pool.split(':')[0]!))].sort().map((country) => {
+		const in_ = rows.filter((r) => r.pool.split(':')[0] === country);
+		return { country, pools: in_.map((r) => r.pool), total: in_.reduce((n, r) => n + r.total, 0), wallet: sum(in_.map((r) => r.wallet)), difference: sum(in_.map((r) => r.difference)), formance: sum(in_.map((r) => r.formance)) };
+	});
+	return { enabled: ledgerEnabled(env), ledger: ledgerEnabled(env) ? LEDGER(env) : null, at, outbox, walletsError, formanceError, pools: rows, countries };
+}
+
+/**
+ * One product's money, per wallet and per country, as of `at` when given: from the journal (the source of truth), and Formance's total per
+ * country (`tenants:{product}:{country}::`, one aggregate call each) beside it when Formance is set up.
+ */
+export async function tenantHoldings(env: Env, tenant: string, at: number | null = null) {
+	const wallets = (await journalBalances(env, at)).flatMap((b) => b.tenants.filter((t) => t.tenant === tenant).map((t) => ({ wallet: b.pool, available: t.available, held: t.held })));
+	const byCountry = new Map<string, { country: string; available: number; held: number; formance: number | null }>();
+	for (const w of wallets) {
+		const c = w.wallet.split(':')[0]!;
+		const row = byCountry.get(c) ?? { country: c, available: 0, held: 0, formance: null };
+		row.available += w.available; row.held += w.held; byCountry.set(c, row);
+	}
+	let formanceError: string | null = null;
+	if (ledgerEnabled(env)) {
+		try { await Promise.all([...byCountry.values()].map(async (c) => { c.formance = await formanceAggregate(env, [`tenants:${seg(tenant)}:${c.country}::`], at); })); }
+		catch (e) { formanceError = String(e instanceof Error ? e.message : e).slice(0, 200); for (const c of byCountry.values()) c.formance = null; }
+	}
+	return { tenant, at, wallets, countries: [...byCountry.values()].sort((a, b) => a.country.localeCompare(b.country)), formanceError };
 }
 
 /** Once a day: tell a person when the books and the money disagree, or postings are stuck on their way to Formance. */

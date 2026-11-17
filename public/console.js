@@ -553,18 +553,47 @@ const poolCountry = (pool) => COUNTRY_NAME[pool.split(':')[0]] || pool.split(':'
 const poolName = (pool) => `${isPispi(pool) ? 'PI-SPI' : 'pawaPay'} · ${poolCountry(pool)}`;
 const signed = (n) => n == null ? '–' : `${n > 0 ? '+' : ''}${fmtAmount(n)}`;
 const WALLETS_SUB = 'What each wallet holds and whether the books account for all of it. Open a wallet to see which product owns what.';
+/** The day the books are read at (`?at=2026-10-31` in the address, the end of that day UTC), or null for now. */
+const asOfDay = () => { const v = new URLSearchParams(location.hash.split('?')[1] || '').get('at'); return v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null; };
+const atQuery = (day) => day ? `?at=${day}` : '';
+const today = () => new Date().toISOString().slice(0, 10);
+/** "As of" a day: for a month-end, the books as they stood at the end of that day (UTC). Empty: today. */
+function asOfInput(day, onPick, key = 'as-of') {
+	const input = h('input', { type: 'date', value: day || '', max: today(), 'data-key': key, 'aria-label': 'Books as of the end of this day (UTC); empty for now' });
+	input.addEventListener('change', () => onPick(input.value || null));
+	return h('label', { class: 'asof' }, h('span', { class: 'small muted' }, 'As of'), input, day ? h('button', { class: 'btn sm', type: 'button', onclick: () => onPick(null) }, 'Today') : null);
+}
+const goAsOf = (path) => (day) => { location.hash = `${path}${atQuery(day)}`; };
+const fmtDay = (day) => new Date(`${day}T12:00:00Z`).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+
 async function walletsPage(main, id) {
 	const soft = (e) => { if (e instanceof AuthError || e instanceof NotOperator) throw e; return null; };
-	const [b, prov, reg] = await Promise.all([api('GET', '/admin/ledger'), api('GET', '/admin/providers').catch(soft), id ? api('GET', '/admin/wallets').catch(soft) : null, id ? loadTenants() : null]);
+	const day = asOfDay();
+	const [b, prov, reg] = await Promise.all([api('GET', `/admin/ledger${atQuery(day)}`), api('GET', '/admin/providers').catch(soft), id ? api('GET', '/admin/wallets').catch(soft) : null, id ? loadTenants() : null]);
+	b.day = day;
 	const accounts = Object.fromEntries((prov?.data || []).flatMap((p) => p.accounts.filter((a) => a.kind !== 'alias').map((a) => [`${a.country}:PAWAPAY`, a])));
 	const floor = prov?.floor ?? null;
 	if (id) {
 		const p = b.pools.find((x) => x.pool === id);
-		return put(main, back('#/wallets', 'Wallets'), p ? [walletDetail(b, p, accounts[p.pool], floor), walletAccess(p.pool, reg)] : h('div', { class: 'alert bad' }, `No wallet ${id}.`));
+		return put(main, back(`#/wallets${atQuery(day)}`, 'Wallets'), p ? [walletDetail(b, p, day ? null : accounts[p.pool], floor), day ? null : walletAccess(p.pool, reg)] : h('div', { class: 'alert bad' }, `No wallet ${id}.`));
 	}
-	put(main, head('Wallets', WALLETS_SUB, adjustButton(b.pools.map((p) => p.pool)), rebuildButton(), refreshButton()), syncStatus(b),
-		b.pools.length ? h('div', { class: 'cards' }, b.pools.map((p) => walletCard(b, p, accounts[p.pool], floor)))
-			: h('div', { class: 'card empty' }, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'));
+	put(main, head('Wallets', WALLETS_SUB, asOfInput(day, goAsOf('#/wallets')), adjustButton(b.pools.map((p) => p.pool)), rebuildButton(), refreshButton()), asOfNote(day), syncStatus(b),
+		b.pools.length ? h('div', { class: 'cards' }, b.pools.map((p) => walletCard(b, p, day ? null : accounts[p.pool], floor)))
+			: h('div', { class: 'card empty' }, 'Nothing booked yet. Payments book themselves as they complete; "Rebuild from payments" books the history.'),
+		countryTable(b));
+}
+/** Reading the past: say so, and what can and cannot be compared then. */
+const asOfNote = (day) => day ? h('div', { class: 'banner info', role: 'status' }, h('div', { class: 'banner-body' }, h('strong', {}, `The books at the end of ${fmtDay(day)} (UTC)`),
+	h('div', { class: 'small' }, 'Postings dated up to then, and Formance as it stood then. The providers only report today\'s balances: compare each wallet with its statement for that day.'))) : null;
+/** Every rail added up per country: what the studio holds there, beside what the wallets report and Formance. */
+function countryTable(b) {
+	if (!b.countries?.length) return null;
+	const diff = (n) => n == null ? '–' : n === 0 ? 'none' : h('span', { class: 'bad-text' }, signed(n));
+	return [h('h2', { class: 'mt22' }, 'Per country'),
+		table([{ label: 'Country' }, { label: 'Wallets' }, { label: 'Books', num: true }, { label: 'In the wallets', num: true }, { label: 'Unexplained', num: true }, ...(b.enabled ? [{ label: 'Formance', num: true }] : [])],
+			b.countries.map((c) => h('tr', {}, h('td', {}, h('span', { class: 'chan' }, flag(c.country), COUNTRY_NAME[c.country] || c.country)), h('td', { class: 'small mono' }, c.pools.join(' · ')),
+				h('td', { class: 'num' }, fmtAmount(c.total)), h('td', { class: 'num' }, c.wallet == null ? '–' : fmtAmount(c.wallet)), h('td', { class: 'num' }, diff(c.difference)),
+				b.enabled ? h('td', { class: `num${c.formance != null && c.formance !== c.total ? ' bad-text' : ''}` }, c.formance == null ? '–' : fmtAmount(c.formance)) : null)), 'No wallets.')];
 }
 const poolMark = (pool) => isPispi(pool) ? h('img', { class: 'flag', src: '/providers/pispi.png', alt: '', width: 20, height: 20 }) : flag(pool.split(':')[0]);
 const adjustButton = (pools, pool) => h('button', { class: 'btn', 'data-key': 'adjust', onclick: () => adjustModal(pools, pool) }, 'Book an adjustment…');
@@ -598,7 +627,7 @@ function walletVerdict(b, p, a) {
 function walletCard(b, p, a, floor) {
 	const v = walletVerdict(b, p, a);
 	const stat = (label, value) => h('div', {}, h('dt', {}, label), h('dd', { class: 'num' }, value));
-	return h('a', { class: `xcard${v.warn ? ' warn' : ''}`, href: `#/wallets/${encodeURIComponent(p.pool)}`, 'data-key': `wallet:${p.pool}` },
+	return h('a', { class: `xcard${v.warn ? ' warn' : ''}`, href: `#/wallets/${encodeURIComponent(p.pool)}${atQuery(b.day)}`, 'data-key': `wallet:${p.pool}` },
 		h('div', { class: 'xcard-head' }, poolMark(p.pool), h('h2', { class: 'm0 ellipsis' }, poolCountry(p.pool)), h('span', { class: 'grow' }), h('span', { class: 'muted small mono' }, p.pool)),
 		h('div', { class: 'xcard-big num' }, p.wallet == null ? h('span', { class: 'muted' }, '–') : fmtAmount(p.wallet)),
 		h('div', { class: 'xcard-line' }, v.badge),
@@ -970,19 +999,19 @@ async function connectModal(id) {
 async function tenantDrawer(id) {
 	const d = overlay(skDrawer(), { label: 'Tenant' });
 	const render = async () => {
-		const [t, keys, books, wallets] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', '/admin/ledger').catch(() => null), api('GET', `/admin/tenants/${id}/wallets`).catch(() => null)]);
-		const owns = (books?.pools || []).flatMap((p) => p.tenants.filter((x) => x.tenant === id).map((x) => ({ pool: p.pool, ...x })));
+		const [t, keys, wallets] = await Promise.all([api('GET', `/admin/tenants/${id}`), api('GET', `/admin/tenants/${id}/keys`), api('GET', `/admin/tenants/${id}/wallets`).catch(() => null)]);
 		d.fill(
 			h('div', { class: 'bar' }, tenantMark(t, 44), h('h1', { class: 'grow' }, t.name), badge(t.status), h('button', { class: 'btn sm', onclick: d.close }, 'Close')),
 			h('div', { class: 'card' }, h('dl', { class: 'kv' }, h('dt', {}, 'Id'), h('dd', { class: 'mono' }, t.id), h('dt', {}, 'Webhook'), h('dd', { class: 'mono' }, t.webhook_url || '–'), h('dt', {}, 'Max payment'), h('dd', {}, t.max_amount ? fmtAmount(t.max_amount) : 'gateway default'),
 				h('dt', {}, 'Secret version'), h('dd', {}, String(t.webhook_version)), h('dt', {}, 'Created'), h('dd', {}, fmtTime(t.created_at)),
-				books ? [h('dt', {}, 'Holds'), h('dd', {}, owns.length ? owns.map((x) => h('div', {}, h('strong', { class: x.available < 0 ? 'bad-text' : null }, fmtAmount(x.available)), ` in ${x.pool}`, x.held ? h('span', { class: 'muted' }, ` · ${fmtAmount(x.held)} held`) : null)) : h('span', { class: 'muted' }, 'nothing yet'))] : null)),
+				)),
 			h('div', { class: 'actions left mb20' },
 				h('button', { class: 'btn', 'data-key': 'edit', onclick: () => tenantForm(t, [], { onSaved: render }) }, 'Edit'),
 				h('button', { class: `btn${t.status === 'active' ? ' danger' : ''}`, 'data-key': 'status', onclick: (e) => {
 					const go = async () => { await api('PATCH', `/admin/tenants/${id}`, { status: t.status === 'active' ? 'suspended' : 'active' }); await render(); reloadPage(); };
 					return t.status === 'active' ? confirmModal('Suspend tenant?', `${t.name} will be refused on every API call until you reactivate it. Payments already in flight still settle.`, 'Suspend', go) : act(e, go, { busy: 'Reactivating…' });
 				} }, t.status === 'active' ? 'Suspend' : 'Reactivate')),
+			holdings(id),
 			wallets ? [h('h2', {}, 'Wallets'), h('p', { class: 'muted small' }, 'The accounts this product may collect into or pay out from. Anything else is refused before it starts.'),
 				table([{ label: 'Wallet' }, { label: 'Collect' }, { label: 'Pay out' }], wallets.data.map((w) => h('tr', {},
 					h('td', {}, h('span', { class: 'chan' }, poolMark(w.id), w.id), w.status !== 'active' ? [' ', badge(w.status)] : null),
@@ -998,6 +1027,28 @@ async function tenantDrawer(id) {
 				h('button', { class: 'btn danger', 'data-key': 'rotate', onclick: () => confirmModal('Rotate signing secret?', 'Webhooks are signed with the new secret immediately. The product must update its secret first, or it will reject events.', 'Rotate', async () => { const s = await api('POST', `/admin/tenants/${id}/webhook-secret`); secretModal(`New webhook secret (v${s.version})`, 'Give this to the product now.', s.secret); await render(); }) }, 'Rotate…')));
 	};
 	try { await render() } catch (e) { d.fill(h('h2', {}, 'Tenant'), h('div', { class: 'alert bad' }, e.message), h('button', { class: 'btn', onclick: d.close }, 'Close')) }
+}
+/** What a product holds, per country and wallet, today or at the end of a day: the journal, with Formance's total per country beside it. */
+function holdings(id) {
+	const box = h('div', { class: 'mb20' });
+	const load = async (day) => {
+		put(box, h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'Holdings'), asOfInput(day, load, 'holdings-as-of')), h('p', { class: 'muted small' }, 'Loading…'));
+		try {
+			const r = await api('GET', `/admin/tenants/${id}/holdings${atQuery(day)}`);
+			const money = (n) => h('span', { class: n < 0 ? 'bad-text' : null }, fmtAmount(n));
+			const rows = r.countries.flatMap((c) => [
+				h('tr', { class: 'sum' }, h('td', {}, h('span', { class: 'chan' }, flag(c.country), COUNTRY_NAME[c.country] || c.country)), h('td', { class: 'num' }, money(c.available)), h('td', { class: 'num' }, c.held ? fmtAmount(c.held) : '–'),
+					h('td', { class: `num${c.formance != null && c.formance !== c.available + c.held ? ' bad-text' : ''}` }, c.formance == null ? '–' : fmtAmount(c.formance))),
+				...r.wallets.filter((w) => w.wallet.startsWith(`${c.country}:`)).map((w) => h('tr', {}, h('td', { class: 'small' }, h('span', { class: 'chan' }, poolMark(w.wallet), w.wallet)), h('td', { class: 'num small' }, money(w.available)), h('td', { class: 'num small' }, w.held ? fmtAmount(w.held) : '–'), h('td', {}))),
+			]);
+			put(box, h('div', { class: 'bar' }, h('h2', { class: 'grow m0' }, 'Holdings'), asOfInput(day, load, 'holdings-as-of')),
+				day ? h('p', { class: 'muted small' }, `At the end of ${fmtDay(day)} (UTC).`) : null,
+				r.formanceError ? h('p', { class: 'small bad-text' }, `Formance could not be read: ${r.formanceError}. These are the gateway's own books.`) : null,
+				table([{ label: 'Country / wallet' }, { label: 'Available', num: true }, { label: 'Held', num: true }, { label: 'Formance', num: true }], rows, day ? 'Nothing held then.' : 'Nothing held yet.'));
+		} catch (x) { put(box, h('h2', {}, 'Holdings'), h('div', { class: 'alert bad' }, x.message)); }
+	};
+	load(null);
+	return box;
 }
 function newKey(tenantId, after) {
 	const label = h('input', { maxlength: 80, placeholder: 'e.g. production backend' }), err = h('div');

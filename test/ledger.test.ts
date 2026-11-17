@@ -58,8 +58,8 @@ test('live payments book themselves: collections credit the tenant, payouts hold
 });
 
 /** A Formance stack: tokens, transactions (refusing a reference it has), accounts, a ledger that may not exist yet. */
-function formance(state: { exists?: boolean; down?: boolean; accounts?: { address: string; volumes: Record<string, { input: number; output: number }> }[][] } = {}) {
-	const txs: any[] = [], calls: Call[] = [];
+function formance(state: { exists?: boolean; down?: boolean; aggregateDown?: boolean } = {}) {
+	const txs: any[] = [], calls: Call[] = [], aggregates: { patterns: string[]; pit: string | null }[] = [];
 	let exists = state.exists ?? true;
 	const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
 	const handler = (c: Call) => {
@@ -76,13 +76,25 @@ function formance(state: { exists?: boolean; down?: boolean; accounts?: { addres
 			if (txs.some((t) => t.reference === tx.reference)) return json({ errorCode: 'CONFLICT', errorMessage: 'reference exists' }, 400);
 			txs.push(tx); return json({ data: { id: txs.length } });
 		}
-		if (u.pathname === '/api/ledger/v2/paygate-v2/accounts') {
-			const pages = state.accounts ?? [[]], i = Number(u.searchParams.get('cursor') ?? 0);
-			return json({ cursor: { data: pages[i] ?? [], hasMore: i + 1 < pages.length, next: String(i + 1) } });
+		if (u.pathname === '/api/ledger/v2/paygate-v2/aggregate/balances' && c.method === 'GET') {
+			// as Formance does: the filter in ?query= (no body on a GET), empty segments match anything, the same number of segments; pit by each transaction's own date
+			if (state.aggregateDown) return json({ errorCode: 'INTERNAL', errorMessage: 'down' }, 503);
+			const q = JSON.parse(u.searchParams.get('query') ?? '{}'), pit = u.searchParams.get('pit');
+			const patterns: string[] = q.$or ? q.$or.map((x: any) => x.$match.address) : [q.$match.address];
+			const fits = (a: string) => patterns.some((p) => { const ps = p.split(':'), as = a.split(':'); return ps.length === as.length && ps.every((x, i) => x === '' || x === as[i]); });
+			let n = 0;
+			for (const tx of txs) {
+				if (pit && tx.timestamp > pit) continue;
+				const amount = Number(tx.script.vars.amount.split(' ')[1]), src = tx.script.vars.source ?? 'world';
+				if (fits(tx.script.vars.destination)) n += amount;
+				if (fits(src)) n -= amount;
+			}
+			aggregates.push({ patterns, pit });
+			return json({ data: { XOF: n } });
 		}
 		return json({ errorCode: 'NOT_FOUND', errorMessage: u.pathname }, 404);
 	};
-	return { handler, txs, calls };
+	return { handler, txs, calls, aggregates };
 }
 const ON = { FORMANCE_BASE_URL: 'https://formance.test', FORMANCE_CLIENT_ID: 'id', FORMANCE_CLIENT_SECRET: 'secret' };
 
@@ -164,22 +176,29 @@ test('no Formance configured: the journal is still kept and nothing is sent', as
 	} finally { quiet(); }
 });
 
-test('reconciliation: the books beside the wallet and beside Formance, and adjustments explain the difference', async () => {
+test('reconciliation: one row per wallet beside its own balance and Formance (one aggregate call each), a subtotal per country, and adjustments explain the difference', async () => {
 	const quiet = silence();
 	try {
 		resetFormanceToken();
 		const g = await setup(ON);
-		const vol = (input: number, output: number) => ({ XOF: { input, output } });
-		const f = formance({ accounts: [[{ address: 'world', volumes: vol(0, 5000) }], [{ address: 'tenants:shop:CIV:PAWAPAY:available', volumes: vol(5000, 0) }]] });
+		const f = formance();
 		const net = stubFetch(f.handler);
 		try {
 			const c = await g.call('POST', '/v1/collections', COLLECT);
 			await g.call('GET', `/v1/collections/${c.body.id}`);
+			await postPending(g.env);
 			const providers = { disburse: { balances: async () => [{ country: 'CIV', currency: 'XOF', balance: COLLECT.amount + 80_000 }, { country: 'SEN', currency: 'XOF', balance: 10_000 }] } } as unknown as Providers;
 			let r = await booksReport(g.env, providers);
+			assert.deepEqual(r.pools.map((p) => p.pool), ['BFA:PAWAPAY', 'CIV:PAWAPAY', 'CIV:PISPI', 'SEN:PAWAPAY'], 'one row per wallet of the registry, booked or not');
 			const civ = r.pools.find((p) => p.pool === 'CIV:PAWAPAY')!;
-			assert.deepEqual([civ.total, civ.wallet, civ.difference, civ.formance], [COLLECT.amount, COLLECT.amount + 80_000, 80_000, 5000], 'Formance read across both pages');
-			assert.deepEqual(r.pools.map((p) => p.pool), ['CIV:PAWAPAY', 'SEN:PAWAPAY'], 'a wallet with no postings still shows');
+			assert.deepEqual([civ.total, civ.wallet, civ.difference, civ.formance], [COLLECT.amount, COLLECT.amount + 80_000, 80_000, COLLECT.amount]);
+			assert.deepEqual(r.pools.find((p) => p.pool === 'CIV:PISPI')!.wallet, null, 'PI-SPI reports no balance: nothing to compare');
+			assert.equal(f.aggregates.length, 4, 'one aggregate call per wallet, no paging');
+			assert.deepEqual(f.aggregates.find((a) => a.patterns.includes('pool:CIV:PAWAPAY:'))!.patterns, ['tenants::CIV:PAWAPAY:', 'pool:CIV:PAWAPAY:']);
+			assert.ok(f.calls.filter((x) => x.url.includes('/aggregate/')).every((x) => x.method === 'GET' && x.body === null), 'the filter goes in the URL');
+			assert.deepEqual(r.countries.map((x) => [x.country, x.pools.length, x.total, x.wallet, x.formance]), [
+				['BFA', 1, 0, null, 0], ['CIV', 2, COLLECT.amount, COLLECT.amount + 80_000, COLLECT.amount], ['SEN', 1, 0, 10_000, 0],
+			], 'a subtotal per country, every rail');
 
 			// the studio's float is booked as unallocated money; then the books explain the wallet
 			const bad = await g.admin('POST', '/admin/ledger/adjustments', { pool: 'CIV:PAWAPAY', amount: 80_000 });
@@ -189,15 +208,77 @@ test('reconciliation: the books beside the wallet and beside Formance, and adjus
 			const adj = await g.admin('POST', '/admin/ledger/adjustments', { pool: 'CIV:PAWAPAY', amount: 80_000, note: 'opening float' });
 			assert.equal(adj.status, 201);
 			assert.match(adj.body.note, /opening float \(by operator\)/);
+			await postPending(g.env);
 			r = await booksReport(g.env, providers);
-			assert.deepEqual(r.pools.find((p) => p.pool === 'CIV:PAWAPAY')!.difference, 0);
-			assert.equal(r.pools.find((p) => p.pool === 'CIV:PAWAPAY')!.unallocated, 80_000);
+			const after = r.pools.find((p) => p.pool === 'CIV:PAWAPAY')!;
+			assert.deepEqual([after.difference, after.unallocated, after.formance], [0, 80_000, after.total]);
 
 			const alerts = () => net.calls.filter((x) => x.url.includes('alerts.test')).map((x) => x.body ?? '');
 			await checkBooks(g.env, providers);
-			assert.ok(alerts().some((a) => a.includes('The books and the wallets disagree') && a.includes('SEN:PAWAPAY')), 'SEN holds money nobody booked');
+			assert.ok(alerts().some((a) => a.includes('The books and the wallets disagree') && a.includes('SEN:PAWAPAY')), 'SEN holds money nobody booked, and the alert names the wallet');
+			assert.ok(!alerts().some((a) => a.includes('CIV:PAWAPAY')), 'CIV reconciles on its own');
 			assert.equal((await g.call('GET', '/admin/ledger')).status, 401, 'a tenant key cannot read the books');
 			assert.equal((await g.admin('GET', '/admin/ledger')).status, 200);
+		} finally { net.restore(); }
+	} finally { quiet(); }
+});
+
+test('the books as of a date: the journal up to then, Formance with pit, no provider balance; per product per country and wallet', async () => {
+	const quiet = silence();
+	try {
+		resetFormanceToken();
+		const g = await setup(ON);
+		const f = formance();
+		const net = stubFetch(f.handler);
+		try {
+			const at = (d: string) => Date.parse(`${d}T12:00:00Z`);
+			const old = await g.call('POST', '/v1/collections', COLLECT);
+			await g.call('GET', `/v1/collections/${old.body.id}`);
+			g.sqlite.prepare(`UPDATE ledger_postings SET created_at = ?`).run(at('2026-10-15')); // booked in October
+			const now = await g.call('POST', '/v1/collections', { ...COLLECT, reference: 'order-2', amount: 2000, phone: '+221770000001' });
+			await g.call('GET', `/v1/collections/${now.body.id}`);
+			await postPending(g.env);
+			const providers = { disburse: { balances: async () => { throw new Error('a past date never asks the provider'); } } } as unknown as Providers;
+
+			const oct = (await g.admin('GET', '/admin/ledger?at=2026-10-31')).body;
+			assert.equal(oct.at, Date.parse('2026-10-31T23:59:59.999Z'), 'a day means its end, UTC');
+			assert.deepEqual(oct.pools.filter((p: any) => p.total).map((p: any) => [p.pool, p.total, p.formance, p.wallet]), [['CIV:PAWAPAY', COLLECT.amount, COLLECT.amount, null]]);
+			assert.ok(f.aggregates.every((a) => a.pit === '2026-10-31T23:59:59.999Z'));
+			assert.equal(oct.walletsError, null);
+			const today = await booksReport(g.env, { disburse: {} } as unknown as Providers);
+			assert.deepEqual(today.countries.filter((c) => c.total).map((c) => [c.country, c.total]), [['CIV', COLLECT.amount], ['SEN', 2000]]);
+			assert.equal((await g.admin('GET', '/admin/ledger?at=yesterday')).body.error.code, 'invalid_date');
+
+			// how much of product X is in country Y on date Z
+			const h = (await g.admin('GET', '/admin/tenants/shop/holdings?at=2026-10-31')).body;
+			assert.deepEqual(h.wallets, [{ wallet: 'CIV:PAWAPAY', available: COLLECT.amount, held: 0 }]);
+			assert.deepEqual(h.countries, [{ country: 'CIV', available: COLLECT.amount, held: 0, formance: COLLECT.amount }]);
+			assert.ok(f.aggregates.some((a) => a.patterns[0] === 'tenants:shop:CIV::'));
+			const nowH = (await g.admin('GET', '/admin/tenants/shop/holdings')).body;
+			assert.deepEqual(nowH.countries.map((c: any) => [c.country, c.available, c.formance]), [['CIV', COLLECT.amount, COLLECT.amount], ['SEN', 2000, 2000]]);
+			assert.equal((await g.admin('GET', '/admin/tenants/nobody/holdings')).status, 404);
+			void providers;
+		} finally { net.restore(); }
+	} finally { quiet(); }
+});
+
+test('Formance unreadable: the books still show the journal and say why', async () => {
+	const quiet = silence();
+	try {
+		resetFormanceToken();
+		const g = await setup(ON);
+		const f = formance({ aggregateDown: true });
+		const net = stubFetch(f.handler);
+		try {
+			const c = await g.call('POST', '/v1/collections', COLLECT);
+			await g.call('GET', `/v1/collections/${c.body.id}`);
+			const r = await booksReport(g.env, { disburse: {} } as unknown as Providers);
+			assert.match(r.formanceError!, /INTERNAL/);
+			assert.equal(r.pools.find((p) => p.pool === 'CIV:PAWAPAY')!.total, COLLECT.amount, 'the journal is the source of truth');
+			assert.ok(r.pools.every((p) => p.formance === null));
+			const h = await g.admin('GET', '/admin/tenants/shop/holdings');
+			assert.equal(h.body.countries[0].available, COLLECT.amount);
+			assert.match(h.body.formanceError, /INTERNAL/);
 		} finally { net.restore(); }
 	} finally { quiet(); }
 });
